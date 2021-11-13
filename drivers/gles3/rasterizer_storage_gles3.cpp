@@ -146,15 +146,23 @@ Ref<Image> RasterizerStorageGLES3::_get_gl_image_and_format(const Ref<Image> &p_
 
 	switch (p_format) {
 		case Image::FORMAT_L8: {
+			if(p_flags & VS::TEXTURE_FLAG_UINT) {
+				print_line("Going to set GL_R8UI");
+				r_gl_internal_format = GL_R8UI;
+				r_gl_format = GL_RED_INTEGER;
+				r_gl_type = GL_UNSIGNED_BYTE;
+			} else {
 #ifdef GLES_OVER_GL
-			r_gl_internal_format = GL_R8;
-			r_gl_format = GL_RED;
-			r_gl_type = GL_UNSIGNED_BYTE;
+				r_gl_internal_format = GL_R8;
+				r_gl_format = GL_RED;
+				r_gl_type = GL_UNSIGNED_BYTE;
 #else
-			r_gl_internal_format = GL_LUMINANCE;
-			r_gl_format = GL_LUMINANCE;
-			r_gl_type = GL_UNSIGNED_BYTE;
-#endif
+				r_gl_internal_format = GL_LUMINANCE;
+				r_gl_format = GL_LUMINANCE;
+				r_gl_type = GL_UNSIGNED_BYTE;
+#endif			
+			}
+
 		} break;
 		case Image::FORMAT_LA8: {
 #ifdef GLES_OVER_GL
@@ -187,11 +195,17 @@ Ref<Image> RasterizerStorageGLES3::_get_gl_image_and_format(const Ref<Image> &p_
 
 		} break;
 		case Image::FORMAT_RGBA8: {
-			r_gl_format = GL_RGBA;
-			r_gl_internal_format = (config.srgb_decode_supported || (p_flags & VS::TEXTURE_FLAG_CONVERT_TO_LINEAR)) ? GL_SRGB8_ALPHA8 : GL_RGBA8;
-			r_gl_type = GL_UNSIGNED_BYTE;
-			r_srgb = true;
-
+			if(p_flags & VS::TEXTURE_FLAG_UINT) {
+				print_line("Going to set GL_RGBA8UI");
+				r_gl_internal_format = GL_RGBA8UI;
+				r_gl_format = GL_RGBA_INTEGER;
+				r_gl_type =  GL_UNSIGNED_BYTE;
+			} else {
+				r_gl_format = GL_RGBA;
+				r_gl_internal_format = (config.srgb_decode_supported || (p_flags & VS::TEXTURE_FLAG_CONVERT_TO_LINEAR)) ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+				r_gl_type = GL_UNSIGNED_BYTE;
+				r_srgb = true;
+			}
 		} break;
 		case Image::FORMAT_RGBA4444: {
 			r_gl_internal_format = GL_RGBA4;

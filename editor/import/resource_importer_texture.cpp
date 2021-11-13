@@ -196,6 +196,7 @@ void ResourceImporterTexture::get_import_options(List<ImportOption> *r_options, 
 	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "flags/filter"), p_preset != PRESET_2D_PIXEL));
 	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "flags/mipmaps"), p_preset == PRESET_3D));
 	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "flags/anisotropic"), false));
+	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "flags/as_uint8"), false));
 	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "flags/srgb", PROPERTY_HINT_ENUM, "Disable,Enable,Detect"), 2));
 	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "process/fix_alpha_border"), p_preset != PRESET_3D));
 	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "process/premult_alpha"), false));
@@ -383,6 +384,7 @@ Error ResourceImporterTexture::import(const String &p_source_file, const String 
 	bool filter = p_options["flags/filter"];
 	bool mipmaps = p_options["flags/mipmaps"];
 	bool anisotropic = p_options["flags/anisotropic"];
+	bool as_uint = p_options["flags/as_uint8"];
 	int srgb = p_options["flags/srgb"];
 	bool fix_alpha_border = p_options["process/fix_alpha_border"];
 	bool premult_alpha = p_options["process/premult_alpha"];
@@ -406,6 +408,11 @@ Error ResourceImporterTexture::import(const String &p_source_file, const String 
 	Array formats_imported;
 
 	int tex_flags = 0;
+	
+	if(as_uint){
+		tex_flags |= Texture::FLAG_UINT;
+	}
+
 	if (repeat > 0) {
 		tex_flags |= Texture::FLAG_REPEAT;
 
