@@ -94,6 +94,8 @@ void CollisionShape2D::_notification(int p_what) {
 				break;
 			}
 
+			set_snap_2d_transforms_to_pixel(false);
+
 			if (!shape.is_valid()) {
 				break;
 			}

@@ -90,6 +90,7 @@ private:
 
 	int light_mask = 1;
 	uint32_t visibility_layer = 1;
+	bool snap_2d_transforms_to_pixel = true;
 
 	int z_index = 0;
 	bool z_relative = true;
@@ -261,6 +262,8 @@ public:
 	void set_visibility_layer_bit(uint32_t p_visibility_layer, bool p_enable);
 	bool get_visibility_layer_bit(uint32_t p_visibility_layer) const;
 
+	void set_snap_2d_transforms_to_pixel(bool p_enabled);
+	bool is_snap_2d_transforms_to_pixel() const;
 	/* ORDERING */
 
 	virtual void set_z_index(int p_z);

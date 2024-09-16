@@ -880,6 +880,7 @@ public:
 	FUNC2(canvas_item_set_light_mask, RID, int)
 
 	FUNC2(canvas_item_set_visibility_layer, RID, uint32_t)
+	FUNC2(canvas_item_set_snap_2d_transforms_to_pixel, RID, bool)
 
 	FUNC2(canvas_item_set_update_when_visible, RID, bool)
 

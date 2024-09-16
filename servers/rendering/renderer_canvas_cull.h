@@ -55,6 +55,7 @@ public:
 		int ysort_index;
 		int ysort_parent_abs_z_index; // Absolute Z index of parent. Only populated and used when y-sorting.
 		uint32_t visibility_layer = 0xffffffff;
+		bool snap_2d_transforms_to_pixel;
 
 		Vector<Item *> child_items;
 
@@ -87,6 +88,7 @@ public:
 			ysort_pos = Vector2();
 			ysort_index = 0;
 			ysort_parent_abs_z_index = 0;
+			snap_2d_transforms_to_pixel = true;
 		}
 	};
 
@@ -218,6 +220,7 @@ public:
 
 	void canvas_item_set_visibility_layer(RID p_item, uint32_t p_layer);
 	uint32_t canvas_item_get_visibility_layer(RID p_item);
+	void canvas_item_set_snap_2d_transforms_to_pixel(RID p_item, bool p_snap_2d_transforms_to_pixel);
 
 	void canvas_item_set_transform(RID p_item, const Transform2D &p_transform);
 	void canvas_item_set_clip(RID p_item, bool p_clip);

@@ -1464,6 +1464,7 @@ public:
 	virtual void canvas_item_set_modulate(RID p_item, const Color &p_color) = 0;
 	virtual void canvas_item_set_self_modulate(RID p_item, const Color &p_color) = 0;
 	virtual void canvas_item_set_visibility_layer(RID p_item, uint32_t p_visibility_layer) = 0;
+	virtual void canvas_item_set_snap_2d_transforms_to_pixel(RID p_item, bool p_set_snap_2d_transforms_to_pixel) = 0;
 
 	virtual void canvas_item_set_draw_behind_parent(RID p_item, bool p_enable) = 0;
 

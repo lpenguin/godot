@@ -284,7 +284,7 @@ void RendererCanvasCull::_cull_canvas_item(Item *p_canvas_item, const Transform2
 		ci->repeat_source_item = repeat_source_item;
 	}
 
-	if (snapping_2d_transforms_to_pixel) {
+	if (snapping_2d_transforms_to_pixel && ci->snap_2d_transforms_to_pixel) {
 		final_xform.columns[2] = (final_xform.columns[2] + Point2(0.5, 0.5)).floor();
 		parent_xform.columns[2] = (parent_xform.columns[2] + Point2(0.5, 0.5)).floor();
 	}
@@ -584,6 +584,13 @@ uint32_t RendererCanvasCull::canvas_item_get_visibility_layer(RID p_item) {
 	if (!canvas_item)
 		return 0;
 	return canvas_item->visibility_layer;
+}
+
+void RendererCanvasCull::canvas_item_set_snap_2d_transforms_to_pixel(RID p_item, bool p_snap_2d_transforms_to_pixel) {
+	Item *canvas_item = canvas_item_owner.get_or_null(p_item);
+	ERR_FAIL_NULL(canvas_item);
+
+	canvas_item->snap_2d_transforms_to_pixel = p_snap_2d_transforms_to_pixel;
 }
 
 void RendererCanvasCull::canvas_item_set_clip(RID p_item, bool p_clip) {
