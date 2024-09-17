@@ -1260,6 +1260,9 @@ void CanvasItem::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_visibility_layer"), &CanvasItem::get_visibility_layer);
 	ClassDB::bind_method(D_METHOD("set_visibility_layer_bit", "layer", "enabled"), &CanvasItem::set_visibility_layer_bit);
 	ClassDB::bind_method(D_METHOD("get_visibility_layer_bit", "layer"), &CanvasItem::get_visibility_layer_bit);
+	ClassDB::bind_method(D_METHOD("set_snap_2d_transforms_to_pixel", "snap_2d_transforms_to_pixel"), &CanvasItem::set_snap_2d_transforms_to_pixel);
+	ClassDB::bind_method(D_METHOD("is_snap_2d_transforms_to_pixel"), &CanvasItem::is_snap_2d_transforms_to_pixel);
+
 
 	ClassDB::bind_method(D_METHOD("set_texture_filter", "mode"), &CanvasItem::set_texture_filter);
 	ClassDB::bind_method(D_METHOD("get_texture_filter"), &CanvasItem::get_texture_filter);
@@ -1281,6 +1284,7 @@ void CanvasItem::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "clip_children", PROPERTY_HINT_ENUM, "Disabled,Clip Only,Clip + Draw"), "set_clip_children_mode", "get_clip_children_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "light_mask", PROPERTY_HINT_LAYERS_2D_RENDER), "set_light_mask", "get_light_mask");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "visibility_layer", PROPERTY_HINT_LAYERS_2D_RENDER), "set_visibility_layer", "get_visibility_layer");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "snap_2d_transforms_to_pixel"), "set_snap_2d_transforms_to_pixel", "is_snap_2d_transforms_to_pixel");
 
 	ADD_GROUP("Ordering", "");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "z_index", PROPERTY_HINT_RANGE, itos(RS::CANVAS_ITEM_Z_MIN) + "," + itos(RS::CANVAS_ITEM_Z_MAX) + ",1"), "set_z_index", "get_z_index");
@@ -1422,6 +1426,18 @@ bool CanvasItem::get_visibility_layer_bit(uint32_t p_visibility_layer) const {
 	ERR_READ_THREAD_GUARD_V(false);
 	ERR_FAIL_UNSIGNED_INDEX_V(p_visibility_layer, 32, false);
 	return (visibility_layer & (1 << p_visibility_layer));
+}
+
+void CanvasItem::set_snap_2d_transforms_to_pixel(bool p_enabled) {
+	ERR_THREAD_GUARD;
+	// visibility_layer = p_visibility_layer;
+	snap_2d_transforms_to_pixel = p_enabled;
+	RenderingServer::get_singleton()->canvas_item_set_snap_2d_transforms_to_pixel(canvas_item, p_enabled);
+}
+
+bool CanvasItem::is_snap_2d_transforms_to_pixel() const {
+	ERR_READ_THREAD_GUARD_V(false);
+	return snap_2d_transforms_to_pixel;
 }
 
 void CanvasItem::_refresh_texture_filter_cache() const {
