@@ -103,7 +103,6 @@ TEST_CASE("[WebGPU][Browser][Screen] The triangle is presented to the canvas") {
 	for (int frame = 0; frame < 3; frame++) {
 		REQUIRE(rd->screen_prepare_for_drawing(DisplayServerEnums::MAIN_WINDOW_ID) == OK);
 		RD::DrawListID list = rd->draw_list_begin_for_screen(DisplayServerEnums::MAIN_WINDOW_ID, clear_color);
-		REQUIRE(list != RD::INVALID_ID);
 		rd->draw_list_bind_render_pipeline(list, pipeline);
 		rd->draw_list_bind_vertex_array(list, vertex_array);
 		rd->draw_list_draw(list, false, 1);

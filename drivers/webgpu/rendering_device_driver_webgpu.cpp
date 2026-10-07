@@ -2530,7 +2530,11 @@ String RenderingDeviceDriverWebGPU::get_api_name() const {
 }
 
 String RenderingDeviceDriverWebGPU::get_api_version() const {
+#ifdef __EMSCRIPTEN__
+	return "browser";
+#else
 	return "wgpu-native";
+#endif
 }
 
 String RenderingDeviceDriverWebGPU::get_pipeline_cache_uuid() const {

@@ -245,7 +245,7 @@ String baked_directory() {
 #endif
 }
 
-TEST_CASE("[WebGPU][Triangle] Offscreen triangle matches the analytic result and Vulkan") {
+TEST_CASE("[WebGPU][Triangle] Triangle rendered to a texture matches the analytic result and Vulkan") {
 	RenderingContextDriverWebGPU webgpu_context;
 	if (webgpu_context.initialize() != OK) {
 		WARN("No WebGPU adapter available, skipping.");
