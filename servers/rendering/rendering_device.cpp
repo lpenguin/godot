@@ -4149,7 +4149,32 @@ String RenderingDevice::_shader_uniform_debug(RID p_shader, int p_set) {
 	return ret;
 }
 
+// Debug aid: when GODOT_DUMP_SPIRV_DIR is set, every SPIR-V module that reaches the driver is written there as
+// <name>__<hash>.<stage>.spv, so that it can be run through other compilers (for example Tint) offline.
+static void _dump_spirv_modules(const Vector<RenderingDevice::ShaderStageSPIRVData> &p_spirv, const String &p_shader_name) {
+	static const String dump_dir = OS::get_singleton()->get_environment("GODOT_DUMP_SPIRV_DIR");
+	if (dump_dir.is_empty()) {
+		return;
+	}
+	static const char *stage_suffix[] = { "vert", "frag", "tesc", "tese", "comp" };
+	String safe_name;
+	for (int i = 0; i < p_shader_name.length(); i++) {
+		const char32_t c = p_shader_name[i];
+		safe_name += (is_ascii_alphanumeric_char(c) || c == '_' || c == '-') ? String::chr(c) : String("_");
+	}
+	uint32_t name_hash = hash_murmur3_buffer(p_shader_name.utf8().get_data(), p_shader_name.utf8().length());
+	for (const RenderingDevice::ShaderStageSPIRVData &stage : p_spirv) {
+		const uint32_t content_hash = hash_murmur3_buffer(stage.spirv.ptr(), stage.spirv.size(), name_hash);
+		const String path = dump_dir.path_join(vformat("%s__%08x.%s.spv", safe_name, content_hash, stage_suffix[stage.shader_stage]));
+		Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+		if (file.is_valid()) {
+			file->store_buffer(stage.spirv.ptr(), stage.spirv.size());
+		}
+	}
+}
+
 Vector<uint8_t> RenderingDevice::shader_compile_binary_from_spirv(const Vector<ShaderStageSPIRVData> &p_spirv, const String &p_shader_name) {
+	_dump_spirv_modules(p_spirv, p_shader_name);
 	const RenderingShaderContainerFormat &container_format = driver->get_shader_container_format();
 	Ref<RenderingShaderContainer> shader_container = container_format.create_container();
 	ERR_FAIL_COND_V(shader_container.is_null(), Vector<uint8_t>());
