@@ -122,6 +122,10 @@ struct Item {
 struct Runner {
 	RD *rd = nullptr;
 	Vector<RID> owned;
+	// When set, shaders are loaded from baked containers in this directory instead of being compiled from GLSL.
+	String baked_dir;
+	// When set, every compiled shader is also written here as a container (<name>.bin).
+	String bake_dir;
 
 	RID track(RID p_rid) {
 		owned.push_back(p_rid);
@@ -129,6 +133,16 @@ struct Runner {
 	}
 
 	RID shader(const String &p_path, RID &r_pipeline) {
+		if (!baked_dir.is_empty()) {
+			const Vector<uint8_t> container = FileAccess::get_file_as_bytes(baked_dir.path_join(p_path.get_file().get_basename() + ".bin"));
+			if (container.is_empty()) {
+				ERR_PRINT("Cannot read the baked shader for " + p_path);
+				return RID();
+			}
+			RID baked_shader = track(rd->shader_create_from_bytecode(container));
+			r_pipeline = track(rd->compute_pipeline_create(baked_shader));
+			return baked_shader;
+		}
 		String source = FileAccess::get_file_as_string(p_path).replace("#[compute]", "");
 		String error;
 		Vector<uint8_t> spirv = rd->shader_compile_spirv_from_source(RDC::SHADER_STAGE_COMPUTE, source, RDC::SHADER_LANGUAGE_GLSL, &error, false);
@@ -141,6 +155,15 @@ struct Runner {
 		stage.shader_stage = RDC::SHADER_STAGE_COMPUTE;
 		stage.spirv = spirv;
 		stages.push_back(stage);
+		if (!bake_dir.is_empty()) {
+			const Vector<uint8_t> container = rd->shader_compile_binary_from_spirv(stages, p_path);
+			Ref<FileAccess> out = FileAccess::open(bake_dir.path_join(p_path.get_file().get_basename() + ".bin"), FileAccess::WRITE);
+			if (out.is_valid() && !container.is_empty()) {
+				out->store_buffer(container.ptr(), container.size());
+			} else {
+				ERR_PRINT("Cannot bake " + p_path);
+			}
+		}
 		RID shader_rid = track(rd->shader_create_from_spirv(stages, p_path));
 		r_pipeline = track(rd->compute_pipeline_create(shader_rid));
 		return shader_rid;
@@ -221,10 +244,12 @@ void cutter_params(ParamWriter &w) {
 	w.v4(0.0f, 0.0f, 1.0f, 0.25f); // Up, bevel length.
 }
 
-Outputs run_scenario(RD *p_rd, const String &p_shaders) {
+Outputs run_scenario(RD *p_rd, const String &p_shaders, const String &p_baked_dir = String(), const String &p_bake_dir = String()) {
 	Outputs out;
 	Runner r;
 	r.rd = p_rd;
+	r.baked_dir = p_baked_dir;
+	r.bake_dir = p_bake_dir;
 
 	const int coarse_count = COARSE.x * COARSE.y * COARSE.z;
 
@@ -576,6 +601,136 @@ TEST_CASE("[WebGPU][Parity] WoodWorks sparse SDF pipeline matches the CPU refere
 		CHECK(probe_ray.mismatches == 0);
 	}
 #endif
+}
+
+// ---- Reference outputs, so the browser can compare against a desktop run ----
+
+Vector<Vector<uint8_t> *> output_fields(Outputs &p_outputs) {
+	Vector<Vector<uint8_t> *> fields;
+	fields.push_back(&p_outputs.states);
+	fields.push_back(&p_outputs.pages);
+	fields.push_back(&p_outputs.atlas_initial);
+	fields.push_back(&p_outputs.carve_atlas);
+	fields.push_back(&p_outputs.carve_pages);
+	fields.push_back(&p_outputs.carve_page_image);
+	fields.push_back(&p_outputs.carve_target_atlas);
+	fields.push_back(&p_outputs.carve_target_pages);
+	fields.push_back(&p_outputs.shaving_target);
+	fields.push_back(&p_outputs.shaving_result);
+	fields.push_back(&p_outputs.probe_down);
+	fields.push_back(&p_outputs.probe_ray);
+	return fields;
+}
+
+const char *OUTPUT_NAMES[] = { "states", "pages", "atlas_initial", "carve_atlas", "carve_pages", "carve_page_image", "carve_target_atlas", "carve_target_pages", "shaving_target", "shaving_result", "probe_down", "probe_ray" };
+
+bool save_outputs(const String &p_path, Outputs &p_outputs) {
+	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::WRITE);
+	if (file.is_null()) {
+		return false;
+	}
+	for (Vector<uint8_t> *field : output_fields(p_outputs)) {
+		file->store_32(field->size());
+		file->store_buffer(field->ptr(), field->size());
+	}
+	return true;
+}
+
+bool load_outputs(const String &p_path, Outputs &r_outputs) {
+	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
+	if (file.is_null()) {
+		return false;
+	}
+	for (Vector<uint8_t> *field : output_fields(r_outputs)) {
+		const uint32_t size = file->get_32();
+		field->resize(size);
+		if (file->get_buffer(field->ptrw(), size) != size) {
+			return false;
+		}
+	}
+	return true;
+}
+
+String baked_directory() {
+#ifdef WEB_ENABLED
+	return "/webgpu";
+#else
+	return OS::get_singleton()->get_environment("WEBGPU_BAKED_DIR");
+#endif
+}
+
+// Desktop only: bakes the shaders into WebGPU containers (WGSL when GODOT_TINT_PATH points to Tint) and stores the Vulkan
+// results as reference data in WEBGPU_BAKE_DIR. The browser test then replays the baked shaders against that reference.
+TEST_CASE("[WebGPU][Bake] Bake shader containers and Vulkan reference outputs") {
+	const String bake_dir = OS::get_singleton()->get_environment("WEBGPU_BAKE_DIR");
+	const String shaders_dir = OS::get_singleton()->get_environment("WOODWORKS_SHADERS_DIR");
+	if (bake_dir.is_empty() || shaders_dir.is_empty()) {
+		WARN("WEBGPU_BAKE_DIR or WOODWORKS_SHADERS_DIR is not set, skipping.");
+		return;
+	}
+#ifdef VULKAN_ENABLED
+	RenderingContextDriverWebGPU webgpu_context;
+	REQUIRE(webgpu_context.initialize() == OK);
+	RD *webgpu_rd = memnew(RD);
+	REQUIRE(webgpu_rd->initialize(&webgpu_context) == OK);
+	Outputs baked_run = run_scenario(webgpu_rd, shaders_dir, String(), bake_dir);
+	memdelete(webgpu_rd);
+	REQUIRE(baked_run.ok);
+
+	RenderingContextDriverVulkanWindows vulkan_context;
+	REQUIRE(vulkan_context.initialize() == OK);
+	RD *vulkan_rd = memnew(RD);
+	REQUIRE(vulkan_rd->initialize(&vulkan_context) == OK);
+	Outputs reference = run_scenario(vulkan_rd, shaders_dir);
+	memdelete(vulkan_rd);
+	REQUIRE(reference.ok);
+	CHECK(save_outputs(bake_dir.path_join("reference.bin"), reference));
+	print_line("Baked containers and reference outputs to " + bake_dir);
+#else
+	WARN("Vulkan is required to produce the reference outputs, skipping.");
+#endif
+}
+
+// Runs the baked shaders on WebGPU (natively, or in the browser where the files are preloaded under /webgpu) and compares
+// every output with the Vulkan reference produced by the bake test.
+TEST_CASE("[WebGPU][Browser] Baked shaders reproduce the Vulkan reference outputs") {
+	const String baked = baked_directory();
+	if (baked.is_empty()) {
+		WARN("WEBGPU_BAKED_DIR is not set, skipping.");
+		return;
+	}
+	Outputs reference;
+	REQUIRE_MESSAGE(load_outputs(baked.path_join("reference.bin"), reference), "Cannot read reference.bin");
+
+	RenderingContextDriverWebGPU context;
+	REQUIRE_MESSAGE(context.initialize() == OK, "No WebGPU adapter.");
+	RD *rd = memnew(RD);
+	REQUIRE(rd->initialize(&context) == OK);
+	print_line("WebGPU device: " + context.device_get(0).name);
+	Outputs result = run_scenario(rd, "shaders", baked);
+	memdelete(rd);
+	REQUIRE(result.ok);
+
+	// Integer data must match exactly; float data within 1e-5.
+	const bool exact[] = { true, true, false, false, true, true, false, true, false, true, false, false };
+	Vector<Vector<uint8_t> *> got = output_fields(result);
+	Vector<Vector<uint8_t> *> want = output_fields(reference);
+	int failures = 0;
+	for (int i = 0; i < got.size(); i++) {
+		bool ok;
+		String detail;
+		if (exact[i]) {
+			ok = *got[i] == *want[i];
+			detail = "exact";
+		} else {
+			const FloatDiff diff = compare_floats(*got[i], *want[i], 1e-5f);
+			ok = diff.mismatches == 0 && got[i]->size() == want[i]->size();
+			detail = describe("float", diff);
+		}
+		print_line(vformat("%s: %s (%s)", OUTPUT_NAMES[i], ok ? "OK" : "MISMATCH", detail));
+		failures += !ok;
+	}
+	CHECK_MESSAGE(failures == 0, "outputs differ from the Vulkan reference");
 }
 
 } // namespace TestWebGPUParity
