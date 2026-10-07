@@ -152,7 +152,27 @@ void RenderingContextDriverWebGPU::driver_free(RenderingDeviceDriver *p_driver) 
 // Surfaces are not implemented yet; the compute-only proof of concept runs on a local device without a window.
 
 RenderingContextDriver::SurfaceID RenderingContextDriverWebGPU::surface_create(const void *p_platform_data) {
+	const WindowPlatformData *data = (const WindowPlatformData *)p_platform_data;
+	ERR_FAIL_NULL_V(data, SurfaceID());
+
+	WGPUSurfaceDescriptor descriptor = {};
+#ifdef __EMSCRIPTEN__
+	WGPUEmscriptenSurfaceSourceCanvasHTMLSelector source = {};
+	source.chain.sType = WGPUSType_EmscriptenSurfaceSourceCanvasHTMLSelector;
+	source.selector.data = data->canvas_selector;
+	source.selector.length = WGPU_STRLEN;
+#else
+	WGPUSurfaceSourceWindowsHWND source = {};
+	source.chain.sType = WGPUSType_SurfaceSourceWindowsHWND;
+	source.hinstance = data->instance;
+	source.hwnd = data->window;
+#endif
+	descriptor.nextInChain = &source.chain;
+	WGPUSurface wgpu_surface = wgpuInstanceCreateSurface(instance, &descriptor);
+	ERR_FAIL_NULL_V_MSG(wgpu_surface, SurfaceID(), "Failed to create the WebGPU surface.");
+
 	Surface *surface = memnew(Surface);
+	surface->surface = wgpu_surface;
 	return SurfaceID(surface);
 }
 
@@ -190,7 +210,11 @@ bool RenderingContextDriverWebGPU::surface_get_needs_resize(SurfaceID p_surface)
 }
 
 void RenderingContextDriverWebGPU::surface_destroy(SurfaceID p_surface) {
-	memdelete((Surface *)p_surface);
+	Surface *surface = (Surface *)p_surface;
+	if (surface->surface) {
+		wgpuSurfaceRelease(surface->surface);
+	}
+	memdelete(surface);
 }
 
 #endif // WEBGPU_ENABLED

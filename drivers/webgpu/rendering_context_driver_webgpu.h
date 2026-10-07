@@ -42,6 +42,7 @@ class RenderingContextDriverWebGPU : public RenderingContextDriver {
 	Device device;
 
 	struct Surface {
+		WGPUSurface surface = nullptr;
 		uint32_t width = 0;
 		uint32_t height = 0;
 		DisplayServerEnums::VSyncMode vsync_mode = DisplayServerEnums::VSYNC_ENABLED;
@@ -49,6 +50,14 @@ class RenderingContextDriverWebGPU : public RenderingContextDriver {
 	};
 
 public:
+	// What a window needs to be presented to: a canvas selector in the browser, a window handle natively.
+	struct WindowPlatformData {
+		const char *canvas_selector = "#canvas";
+		void *window = nullptr; // HWND.
+		void *instance = nullptr; // HINSTANCE.
+	};
+
+	WGPUSurface surface_get(SurfaceID p_surface) const { return ((const Surface *)p_surface)->surface; }
 	WGPUInstance instance_get() const { return instance; }
 	WGPUAdapter adapter_get() const { return adapter; }
 

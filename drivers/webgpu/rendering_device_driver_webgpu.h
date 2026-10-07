@@ -123,6 +123,20 @@ public:
 		LocalVector<LocalVector<WGPUVertexAttribute>> attributes;
 	};
 
+	struct SwapChainInfo {
+		RenderingContextDriver::SurfaceID surface_id = 0;
+		WGPUSurface surface = nullptr;
+		WGPUTextureFormat wgpu_format = WGPUTextureFormat_Undefined;
+		DataFormat format = DATA_FORMAT_MAX;
+		RenderPassInfo *render_pass = nullptr;
+		bool configured = false;
+		uint32_t width = 0;
+		uint32_t height = 0;
+		// The image acquired for the frame that is being recorded, presented by command_queue_execute_and_present().
+		TextureInfo *current_texture = nullptr;
+		FramebufferInfo *current_framebuffer = nullptr;
+	};
+
 	struct FenceInfo {
 		WGPUFuture future = {};
 		volatile bool done = false;
@@ -155,6 +169,7 @@ private:
 	void _end_compute_pass(CommandBufferInfo *p_cmd);
 	void _ensure_compute_pass(CommandBufferInfo *p_cmd);
 	void _end_render_pass(CommandBufferInfo *p_cmd);
+	void _release_swap_chain_image(SwapChainInfo *p_swap_chain);
 	bool _map_for_read(BufferInfo *p_buffer);
 
 public:

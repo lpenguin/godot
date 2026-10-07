@@ -1178,6 +1178,16 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 			wgpuCommandBufferRelease(command_buffer);
 		}
 	}
+	for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
+		SwapChainInfo *swap_chain = (SwapChainInfo *)p_swap_chains[i].id;
+#ifndef __EMSCRIPTEN__
+		// The browser presents the canvas by itself once the frame's task ends.
+		if (swap_chain->current_texture) {
+			wgpuSurfacePresent(swap_chain->surface);
+		}
+#endif
+		_release_swap_chain_image(swap_chain);
+	}
 	if (p_cmd_fence) {
 		FenceInfo *fence = (FenceInfo *)p_cmd_fence.id;
 		WGPUQueueWorkDoneCallbackInfo callback_info = {};
@@ -1244,6 +1254,21 @@ void RenderingDeviceDriverWebGPU::command_buffer_execute_secondary(CommandBuffer
 	WGPU_UNIMPLEMENTED_VOID();
 }
 
+void RenderingDeviceDriverWebGPU::_release_swap_chain_image(SwapChainInfo *p_swap_chain) {
+	if (p_swap_chain->current_framebuffer) {
+		memdelete(p_swap_chain->current_framebuffer);
+		p_swap_chain->current_framebuffer = nullptr;
+	}
+	if (p_swap_chain->current_texture) {
+		if (p_swap_chain->current_texture->view) {
+			wgpuTextureViewRelease(p_swap_chain->current_texture->view);
+		}
+		wgpuTextureRelease(p_swap_chain->current_texture->texture);
+		memdelete(p_swap_chain->current_texture);
+		p_swap_chain->current_texture = nullptr;
+	}
+}
+
 void RenderingDeviceDriverWebGPU::_end_render_pass(CommandBufferInfo *p_cmd) {
 	if (p_cmd->render_pass) {
 		wgpuRenderPassEncoderEnd(p_cmd->render_pass);
@@ -1267,23 +1292,154 @@ void RenderingDeviceDriverWebGPU::_end_compute_pass(CommandBufferInfo *p_cmd) {
 // ----- Swap chain and framebuffers (not implemented yet) -----
 
 RenderingDeviceDriver::SwapChainID RenderingDeviceDriverWebGPU::swap_chain_create(RenderingContextDriver::SurfaceID p_surface) {
-	WGPU_UNIMPLEMENTED(SwapChainID());
+	WGPUSurface surface = context_driver->surface_get(p_surface);
+	ERR_FAIL_NULL_V(surface, SwapChainID());
+
+	WGPUSurfaceCapabilities capabilities = {};
+	ERR_FAIL_COND_V(wgpuSurfaceGetCapabilities(surface, context_driver->adapter_get(), &capabilities) != WGPUStatus_Success, SwapChainID());
+	WGPUTextureFormat wgpu_format = WGPUTextureFormat_Undefined;
+	for (size_t i = 0; i < capabilities.formatCount; i++) {
+		if (capabilities.formats[i] == WGPUTextureFormat_BGRA8Unorm) {
+			wgpu_format = WGPUTextureFormat_BGRA8Unorm;
+			break;
+		}
+		if (capabilities.formats[i] == WGPUTextureFormat_RGBA8Unorm) {
+			wgpu_format = WGPUTextureFormat_RGBA8Unorm;
+		}
+	}
+	wgpuSurfaceCapabilitiesFreeMembers(capabilities);
+	ERR_FAIL_COND_V_MSG(wgpu_format == WGPUTextureFormat_Undefined, SwapChainID(), "WebGPU driver: the surface supports neither BGRA8 nor RGBA8 unorm.");
+
+	SwapChainInfo *info = memnew(SwapChainInfo);
+	info->surface_id = p_surface;
+	info->surface = surface;
+	info->wgpu_format = wgpu_format;
+	info->format = wgpu_format == WGPUTextureFormat_BGRA8Unorm ? DATA_FORMAT_B8G8R8A8_UNORM : DATA_FORMAT_R8G8B8A8_UNORM;
+
+	// The pass that every screen draw list renders with: one color attachment that is cleared and stored.
+	Attachment attachment;
+	attachment.format = info->format;
+	attachment.samples = TEXTURE_SAMPLES_1;
+	attachment.load_op = ATTACHMENT_LOAD_OP_CLEAR;
+	attachment.store_op = ATTACHMENT_STORE_OP_STORE;
+	Subpass subpass;
+	AttachmentReference color_reference;
+	color_reference.attachment = 0;
+	color_reference.layout = TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	color_reference.aspect = TEXTURE_ASPECT_COLOR_BIT;
+	subpass.color_references.push_back(color_reference);
+	info->render_pass = memnew(RenderPassInfo);
+	info->render_pass->attachments.push_back(attachment);
+	info->render_pass->subpasses.push_back(subpass);
+	return SwapChainID(info);
 }
 
 Error RenderingDeviceDriverWebGPU::swap_chain_resize(CommandQueueID p_cmd_queue, SwapChainID p_swap_chain, uint32_t p_desired_framebuffer_count) {
-	WGPU_UNIMPLEMENTED(ERR_UNAVAILABLE);
+	SwapChainInfo *info = (SwapChainInfo *)p_swap_chain.id;
+	const uint32_t width = context_driver->surface_get_width(info->surface_id);
+	const uint32_t height = context_driver->surface_get_height(info->surface_id);
+	ERR_FAIL_COND_V_MSG(width == 0 || height == 0, ERR_SKIP, "The surface has no area (the window may be minimized).");
+
+	_release_swap_chain_image(info);
+
+	WGPUPresentMode present_mode = WGPUPresentMode_Fifo;
+	WGPUSurfaceCapabilities capabilities = {};
+	if (wgpuSurfaceGetCapabilities(info->surface, context_driver->adapter_get(), &capabilities) == WGPUStatus_Success) {
+		auto supported = [&](WGPUPresentMode p_mode) {
+			for (size_t i = 0; i < capabilities.presentModeCount; i++) {
+				if (capabilities.presentModes[i] == p_mode) {
+					return true;
+				}
+			}
+			return false;
+		};
+		switch (context_driver->surface_get_vsync_mode(info->surface_id)) {
+			case DisplayServerEnums::VSYNC_DISABLED:
+				present_mode = supported(WGPUPresentMode_Immediate) ? WGPUPresentMode_Immediate : WGPUPresentMode_Fifo;
+				break;
+			case DisplayServerEnums::VSYNC_ADAPTIVE:
+				present_mode = supported(WGPUPresentMode_FifoRelaxed) ? WGPUPresentMode_FifoRelaxed : WGPUPresentMode_Fifo;
+				break;
+			case DisplayServerEnums::VSYNC_MAILBOX:
+				present_mode = supported(WGPUPresentMode_Mailbox) ? WGPUPresentMode_Mailbox : WGPUPresentMode_Fifo;
+				break;
+			default:
+				break;
+		}
+		wgpuSurfaceCapabilitiesFreeMembers(capabilities);
+	}
+
+	WGPUSurfaceConfiguration configuration = {};
+	configuration.device = device;
+	configuration.format = info->wgpu_format;
+	configuration.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+	configuration.width = width;
+	configuration.height = height;
+	configuration.alphaMode = WGPUCompositeAlphaMode_Auto;
+	configuration.presentMode = present_mode;
+	wgpuSurfaceConfigure(info->surface, &configuration);
+
+	info->width = width;
+	info->height = height;
+	info->configured = true;
+	context_driver->surface_set_needs_resize(info->surface_id, false);
+	return OK;
 }
 
 RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGPU::swap_chain_acquire_framebuffer(CommandQueueID p_cmd_queue, SwapChainID p_swap_chain, bool &r_resize_required) {
-	WGPU_UNIMPLEMENTED(FramebufferID());
+	SwapChainInfo *info = (SwapChainInfo *)p_swap_chain.id;
+	if (!info->configured || context_driver->surface_get_needs_resize(info->surface_id)) {
+		r_resize_required = true;
+		return FramebufferID();
+	}
+
+	_release_swap_chain_image(info);
+
+	WGPUSurfaceTexture surface_texture = {};
+	wgpuSurfaceGetCurrentTexture(info->surface, &surface_texture);
+	switch (surface_texture.status) {
+		case WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal:
+			break;
+		case WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal:
+			// Usable, but the surface should be reconfigured soon.
+			context_driver->surface_set_needs_resize(info->surface_id, true);
+			break;
+		default:
+			if (surface_texture.texture) {
+				wgpuTextureRelease(surface_texture.texture);
+			}
+			r_resize_required = true;
+			return FramebufferID();
+	}
+
+	TextureInfo *texture = memnew(TextureInfo);
+	texture->texture = surface_texture.texture;
+	texture->view = wgpuTextureCreateView(surface_texture.texture, nullptr);
+	texture->format = info->format;
+	texture->wgpu_format = info->wgpu_format;
+	texture->type = TEXTURE_TYPE_2D;
+	texture->width = info->width;
+	texture->height = info->height;
+	texture->usage_bits = TEXTURE_USAGE_COLOR_ATTACHMENT_BIT;
+	texture->view_dimension = WGPUTextureViewDimension_2D;
+	texture->owns_texture = false;
+	info->current_texture = texture;
+
+	FramebufferInfo *framebuffer = memnew(FramebufferInfo);
+	framebuffer->render_pass = info->render_pass;
+	framebuffer->width = info->width;
+	framebuffer->height = info->height;
+	framebuffer->attachments.push_back(texture);
+	info->current_framebuffer = framebuffer;
+	return FramebufferID(framebuffer);
 }
 
 RenderingDeviceDriver::RenderPassID RenderingDeviceDriverWebGPU::swap_chain_get_render_pass(SwapChainID p_swap_chain) {
-	WGPU_UNIMPLEMENTED(RenderPassID());
+	return RenderPassID(((SwapChainInfo *)p_swap_chain.id)->render_pass);
 }
 
 RenderingDeviceDriver::DataFormat RenderingDeviceDriverWebGPU::swap_chain_get_format(SwapChainID p_swap_chain) {
-	return DATA_FORMAT_B8G8R8A8_UNORM;
+	return ((const SwapChainInfo *)p_swap_chain.id)->format;
 }
 
 RenderingDeviceDriver::ColorSpace RenderingDeviceDriverWebGPU::swap_chain_get_color_space(SwapChainID p_swap_chain) {
@@ -1295,6 +1451,13 @@ bool RenderingDeviceDriverWebGPU::swap_chain_get_hdr_output_supported(SwapChainI
 }
 
 void RenderingDeviceDriverWebGPU::swap_chain_free(SwapChainID p_swap_chain) {
+	SwapChainInfo *info = (SwapChainInfo *)p_swap_chain.id;
+	_release_swap_chain_image(info);
+	if (info->configured) {
+		wgpuSurfaceUnconfigure(info->surface);
+	}
+	memdelete(info->render_pass);
+	memdelete(info);
 }
 
 RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGPU::framebuffer_create(RenderPassID p_render_pass, VectorView<TextureID> p_attachments, uint32_t p_width, uint32_t p_height) {
