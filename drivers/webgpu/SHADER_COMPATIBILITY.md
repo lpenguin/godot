@@ -38,3 +38,36 @@ SSR filter, DoF, subsurface scattering, luminance reduce, TAA resolve.
        WEBGPU_SPIRV_DIR=<dir> GODOT_TINT_PATH=<tint> godot --headless --test --test-case="*Convert*"
 
    The failing modules are listed as `CONVERT_FAIL <name>`; the Tint message precedes each of them.
+
+## The WoodWorks project, whole set
+
+Same measurement over the main menu, `viewer.tscn` (free and guided modes, bowl workpiece) and the probe scene, with the
+shader cache disabled so that every module is compiled: **2034 modules**, of which `SceneForwardClusteredShaderRD` is
+1714 (the engine's 3D shader plus every variant produced by the project's own spatial shaders).
+
+| | modules | convert |
+|---|---|---|
+| as is | 2034 | about 11% (183 of 1637 in the first run) |
+| texture arrays temporarily replaced by single textures (experiment, not committed) | 2034 | **1011 (50%)** |
+
+Arrays of textures hide the next layer of problems, because Tint stops at the first error. With them out of the way the
+scene shader (822 of 1714 convert) fails on:
+
+| Variants | Tint error | Note |
+|---|---|---|
+| 278 | `textureSample` must be called from uniform control flow | sampling inside non-uniform branches |
+| 104 | `dpdx` / `dpdy` (+3 `fwidth`) | same rule for derivatives |
+| 24 | `subgroupBroadcastFirst` outside subgroup-uniform control flow | cluster light loop |
+| 76 | texture atomics (`Image` storage class) | SDF render mode, SDFGI only |
+
+So the scene shader's work is the uniform-control-flow rule plus the texture arrays; everything else is a short list
+of small fixes.
+
+Other findings:
+
+* The three project compute shaders that come from imported `RDShaderFile` resources carry SPIR-V 1.4 when the editor imports
+  them with the Vulkan driver, and Tint rejects them. They must be imported (or converted) as SPIR-V 1.3.
+* Tint hits internal errors on non-finite constants (`ParticlesCopy`, 14 modules) and on a multisample resolve texture
+  type (`Resolve`, 3 modules).
+* Browsers do not enable Tint's `chromium_disable_uniformity_analysis` for pages, so the uniformity errors cannot be
+  suppressed and have to be fixed in the shaders.
