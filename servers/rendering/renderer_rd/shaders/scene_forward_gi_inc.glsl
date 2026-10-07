@@ -49,6 +49,7 @@ vec4 voxel_cone_trace_45_degrees(texture3D probe, vec3 cell_size, vec3 pos, vec3
 }
 
 void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3 normal_xform, float roughness, vec3 ambient, vec3 environment, inout vec4 out_spec, inout vec4 out_diff) {
+#ifndef WEBGPU // VoxelGI needs an array of 3D textures
 	position = (voxel_gi_instances.data[index].xform * vec4(position, 1.0)).xyz;
 	ref_vec = normalize((voxel_gi_instances.data[index].xform * vec4(ref_vec, 0.0)).xyz);
 	normal = normalize((voxel_gi_instances.data[index].xform * vec4(normal, 0.0)).xyz);
@@ -106,6 +107,7 @@ void voxel_gi_compute(uint index, vec3 position, vec3 normal, vec3 ref_vec, mat3
 	//irr_light=vec3(0.0);
 
 	out_spec += vec4(irr_light.rgb * blend, blend);
+#endif
 }
 
 vec2 octahedron_wrap(vec2 v) {

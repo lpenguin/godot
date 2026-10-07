@@ -387,9 +387,26 @@ layout(set = 1, binding = 5) uniform texture2D shadow_atlas;
 
 layout(set = 1, binding = 6) uniform texture2D directional_shadow_atlas;
 
+#ifdef WEBGPU
+
+// WebGPU has no arrays of textures: one binding per lightmap texture (lightmaps first, then shadowmasks), selected by
+// lightmap_sample_lod() / lightmap_sample_bicubic(). VoxelGI is not available.
+#define LIGHTMAP_TEXTURE_BINDING_BASE 40
+layout(set = 1, binding = LIGHTMAP_TEXTURE_BINDING_BASE + 0) uniform texture2DArray lightmap_texture_0;
+layout(set = 1, binding = LIGHTMAP_TEXTURE_BINDING_BASE + 1) uniform texture2DArray lightmap_texture_1;
+layout(set = 1, binding = LIGHTMAP_TEXTURE_BINDING_BASE + 2) uniform texture2DArray lightmap_texture_2;
+layout(set = 1, binding = LIGHTMAP_TEXTURE_BINDING_BASE + 3) uniform texture2DArray lightmap_texture_3;
+#if MAX_LIGHTMAP_TEXTURES != 2
+#error WebGPU declares exactly four lightmap textures (MAX_LIGHTMAP_TEXTURES * 2)
+#endif
+
+#else
+
 layout(set = 1, binding = 7) uniform texture2DArray lightmap_textures[MAX_LIGHTMAP_TEXTURES * 2];
 
 layout(set = 1, binding = 8) uniform texture3D voxel_gi_textures[MAX_VOXEL_GI_INSTANCES];
+
+#endif
 
 layout(set = 1, binding = 9, std430) buffer restrict readonly ClusterBuffer {
 	uint data[];

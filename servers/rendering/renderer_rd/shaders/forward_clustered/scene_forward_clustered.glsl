@@ -954,6 +954,11 @@ float h1(float a) {
 	return 1.0 + w3(a) / (w2(a) + w3(a));
 }
 
+#ifdef WEBGPU
+// Lightmaps have no mipmaps; an explicit LOD keeps the sample legal in the non-uniform switch of lightmap_sample_bicubic().
+#define TEXTURE_ARRAY_BICUBIC_FETCH(tex, uvw) textureLod(sampler2DArray(tex, SAMPLER_LINEAR_CLAMP), uvw, 0.0)
+#endif
+
 vec4 textureArray_bicubic(texture2DArray tex, vec3 uv, vec2 texture_size) {
 	vec2 texel_size = vec2(1.0) / texture_size;
 
@@ -974,9 +979,45 @@ vec4 textureArray_bicubic(texture2DArray tex, vec3 uv, vec2 texture_size) {
 	vec2 p2 = (vec2(iuv.x + h0x, iuv.y + h1y) - vec2(0.5)) * texel_size;
 	vec2 p3 = (vec2(iuv.x + h1x, iuv.y + h1y) - vec2(0.5)) * texel_size;
 
+#ifdef WEBGPU
+	return (g0(fuv.y) * (g0x * TEXTURE_ARRAY_BICUBIC_FETCH(tex, vec3(p0, uv.z)) + g1x * TEXTURE_ARRAY_BICUBIC_FETCH(tex, vec3(p1, uv.z)))) +
+			(g1(fuv.y) * (g0x * TEXTURE_ARRAY_BICUBIC_FETCH(tex, vec3(p2, uv.z)) + g1x * TEXTURE_ARRAY_BICUBIC_FETCH(tex, vec3(p3, uv.z))));
+#else
 	return (g0(fuv.y) * (g0x * texture(sampler2DArray(tex, SAMPLER_LINEAR_CLAMP), vec3(p0, uv.z)) + g1x * texture(sampler2DArray(tex, SAMPLER_LINEAR_CLAMP), vec3(p1, uv.z)))) +
 			(g1(fuv.y) * (g0x * texture(sampler2DArray(tex, SAMPLER_LINEAR_CLAMP), vec3(p2, uv.z)) + g1x * texture(sampler2DArray(tex, SAMPLER_LINEAR_CLAMP), vec3(p3, uv.z))));
+#endif
 }
+
+#ifdef WEBGPU
+
+// Texture selection by a dynamic index; the sampling itself uses an explicit LOD, so it is legal in non-uniform control flow.
+vec4 lightmap_sample_lod(uint idx, vec3 uvw) {
+	switch (idx) {
+		case 0:
+			return textureLod(sampler2DArray(lightmap_texture_0, SAMPLER_LINEAR_CLAMP), uvw, 0.0);
+		case 1:
+			return textureLod(sampler2DArray(lightmap_texture_1, SAMPLER_LINEAR_CLAMP), uvw, 0.0);
+		case 2:
+			return textureLod(sampler2DArray(lightmap_texture_2, SAMPLER_LINEAR_CLAMP), uvw, 0.0);
+		default:
+			return textureLod(sampler2DArray(lightmap_texture_3, SAMPLER_LINEAR_CLAMP), uvw, 0.0);
+	}
+}
+
+vec4 lightmap_sample_bicubic(uint idx, vec3 uvw, vec2 texture_size) {
+	switch (idx) {
+		case 0:
+			return textureArray_bicubic(lightmap_texture_0, uvw, texture_size);
+		case 1:
+			return textureArray_bicubic(lightmap_texture_1, uvw, texture_size);
+		case 2:
+			return textureArray_bicubic(lightmap_texture_2, uvw, texture_size);
+		default:
+			return textureArray_bicubic(lightmap_texture_3, uvw, texture_size);
+	}
+}
+
+#endif
 #endif //USE_LIGHTMAP
 
 #ifdef USE_MULTIVIEW
@@ -1843,15 +1884,29 @@ void fragment_shader(in SceneData scene_data) {
 			vec3 lm_light_l1p1;
 
 			if (sc_use_lightmap_bicubic_filter()) {
+#ifdef WEBGPU
+				lm_light_l0 = lightmap_sample_bicubic(ofs, uvw + vec3(0.0, 0.0, 0.0), lightmaps.data[ofs].light_texture_size).rgb;
+				lm_light_l1n1 = (lightmap_sample_bicubic(ofs, uvw + vec3(0.0, 0.0, 1.0), lightmaps.data[ofs].light_texture_size).rgb - vec3(0.5)) * 2.0;
+				lm_light_l1_0 = (lightmap_sample_bicubic(ofs, uvw + vec3(0.0, 0.0, 2.0), lightmaps.data[ofs].light_texture_size).rgb - vec3(0.5)) * 2.0;
+				lm_light_l1p1 = (lightmap_sample_bicubic(ofs, uvw + vec3(0.0, 0.0, 3.0), lightmaps.data[ofs].light_texture_size).rgb - vec3(0.5)) * 2.0;
+#else
 				lm_light_l0 = textureArray_bicubic(lightmap_textures[ofs], uvw + vec3(0.0, 0.0, 0.0), lightmaps.data[ofs].light_texture_size).rgb;
 				lm_light_l1n1 = (textureArray_bicubic(lightmap_textures[ofs], uvw + vec3(0.0, 0.0, 1.0), lightmaps.data[ofs].light_texture_size).rgb - vec3(0.5)) * 2.0;
 				lm_light_l1_0 = (textureArray_bicubic(lightmap_textures[ofs], uvw + vec3(0.0, 0.0, 2.0), lightmaps.data[ofs].light_texture_size).rgb - vec3(0.5)) * 2.0;
 				lm_light_l1p1 = (textureArray_bicubic(lightmap_textures[ofs], uvw + vec3(0.0, 0.0, 3.0), lightmaps.data[ofs].light_texture_size).rgb - vec3(0.5)) * 2.0;
+#endif
 			} else {
+#ifdef WEBGPU
+				lm_light_l0 = lightmap_sample_lod(ofs, uvw + vec3(0.0, 0.0, 0.0)).rgb;
+				lm_light_l1n1 = (lightmap_sample_lod(ofs, uvw + vec3(0.0, 0.0, 1.0)).rgb - vec3(0.5)) * 2.0;
+				lm_light_l1_0 = (lightmap_sample_lod(ofs, uvw + vec3(0.0, 0.0, 2.0)).rgb - vec3(0.5)) * 2.0;
+				lm_light_l1p1 = (lightmap_sample_lod(ofs, uvw + vec3(0.0, 0.0, 3.0)).rgb - vec3(0.5)) * 2.0;
+#else
 				lm_light_l0 = textureLod(sampler2DArray(lightmap_textures[ofs], SAMPLER_LINEAR_CLAMP), uvw + vec3(0.0, 0.0, 0.0), 0.0).rgb;
 				lm_light_l1n1 = (textureLod(sampler2DArray(lightmap_textures[ofs], SAMPLER_LINEAR_CLAMP), uvw + vec3(0.0, 0.0, 1.0), 0.0).rgb - vec3(0.5)) * 2.0;
 				lm_light_l1_0 = (textureLod(sampler2DArray(lightmap_textures[ofs], SAMPLER_LINEAR_CLAMP), uvw + vec3(0.0, 0.0, 2.0), 0.0).rgb - vec3(0.5)) * 2.0;
 				lm_light_l1p1 = (textureLod(sampler2DArray(lightmap_textures[ofs], SAMPLER_LINEAR_CLAMP), uvw + vec3(0.0, 0.0, 3.0), 0.0).rgb - vec3(0.5)) * 2.0;
+#endif
 			}
 
 			vec3 n = normalize(lightmaps.data[ofs].normal_xform * indirect_normal);
@@ -1864,9 +1919,17 @@ void fragment_shader(in SceneData scene_data) {
 
 		} else {
 			if (sc_use_lightmap_bicubic_filter()) {
+#ifdef WEBGPU
+				ambient_light += lightmap_sample_bicubic(ofs, uvw, lightmaps.data[ofs].light_texture_size).rgb * lightmaps.data[ofs].exposure_normalization;
+#else
 				ambient_light += textureArray_bicubic(lightmap_textures[ofs], uvw, lightmaps.data[ofs].light_texture_size).rgb * lightmaps.data[ofs].exposure_normalization;
+#endif
 			} else {
+#ifdef WEBGPU
+				ambient_light += lightmap_sample_lod(ofs, uvw).rgb * lightmaps.data[ofs].exposure_normalization;
+#else
 				ambient_light += textureLod(sampler2DArray(lightmap_textures[ofs], SAMPLER_LINEAR_CLAMP), uvw, 0.0).rgb * lightmaps.data[ofs].exposure_normalization;
+#endif
 			}
 		}
 	}
@@ -2311,9 +2374,17 @@ void fragment_shader(in SceneData scene_data) {
 				const vec3 uvw = vec3(scaled_uv, float(slice));
 
 				if (sc_use_lightmap_bicubic_filter()) {
+#ifdef WEBGPU
+					shadowmask = lightmap_sample_bicubic(MAX_LIGHTMAP_TEXTURES + ofs, uvw, lightmaps.data[ofs].light_texture_size).x;
+#else
 					shadowmask = textureArray_bicubic(lightmap_textures[MAX_LIGHTMAP_TEXTURES + ofs], uvw, lightmaps.data[ofs].light_texture_size).x;
+#endif
 				} else {
+#ifdef WEBGPU
+					shadowmask = lightmap_sample_lod(MAX_LIGHTMAP_TEXTURES + ofs, uvw).x;
+#else
 					shadowmask = textureLod(sampler2DArray(lightmap_textures[MAX_LIGHTMAP_TEXTURES + ofs], SAMPLER_LINEAR_CLAMP), uvw, 0.0).x;
+#endif
 				}
 			}
 		}
