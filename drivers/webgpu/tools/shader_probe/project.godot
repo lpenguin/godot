@@ -1,0 +1,24 @@
+; Engine configuration file used to collect Godot's built-in Forward+ shaders.
+config_version=5
+
+[application]
+
+config/name="shader_probe"
+run/main_scene="res://main.tscn"
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+shader_compiler/shader_cache/enabled=false
+anti_aliasing/quality/msaa_3d=2
+anti_aliasing/quality/screen_space_aa=1
+anti_aliasing/quality/use_taa=true
+anti_aliasing/quality/use_debanding=true
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
+lights_and_shadows/positional_shadow/soft_shadow_filter_quality=3
+environment/ssao/quality=3
+environment/ssil/quality=3
+environment/screen_space_reflection/roughness_quality=3
+environment/subsurface_scattering/subsurface_scattering_quality=3
+environment/volumetric_fog/volume_size=64
+environment/volumetric_fog/volume_depth=64
