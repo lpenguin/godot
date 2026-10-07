@@ -32,6 +32,8 @@
 
 #include "rendering_shader_container_webgpu.h"
 
+#include "core/io/file_access.h"
+#include "core/os/os.h"
 #include "core/templates/hash_set.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
@@ -98,6 +100,37 @@ Vector<uint8_t> _strip_buffer_non_readable(const Vector<uint8_t> &p_spirv) {
 	return result;
 }
 
+#ifndef WEB_ENABLED
+// Converts SPIR-V to WGSL with the Tint command line tool (GODOT_TINT_PATH). Browsers only accept WGSL, so the
+// conversion happens when the container is baked, never in the player.
+bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const String &p_name, String &r_wgsl) {
+	const String directory = OS::get_singleton()->get_temp_path();
+	const String stem = directory.path_join("godot_webgpu_" + itos(OS::get_singleton()->get_process_id()) + "_" + p_name.get_file().get_basename().validate_filename());
+	const String input = stem + ".spv";
+	const String output = stem + ".wgsl";
+	{
+		Ref<FileAccess> file = FileAccess::open(input, FileAccess::WRITE);
+		ERR_FAIL_COND_V_MSG(file.is_null(), false, "WebGPU: cannot write " + input);
+		file->store_buffer(p_spirv.ptr(), p_spirv.size());
+	}
+	List<String> arguments;
+	arguments.push_back("--format");
+	arguments.push_back("wgsl");
+	arguments.push_back("-o");
+	arguments.push_back(output);
+	arguments.push_back(input);
+	String log;
+	int exit_code = -1;
+	const Error err = OS::get_singleton()->execute(p_tint, arguments, &log, &exit_code, true);
+	if (err != OK || exit_code != 0) {
+		ERR_PRINT(vformat("WebGPU: Tint failed for '%s' (exit code %d): %s", p_name, exit_code, log));
+		return false;
+	}
+	r_wgsl = FileAccess::get_file_as_string(output);
+	return !r_wgsl.is_empty();
+}
+#endif
+
 } // namespace
 
 RenderingShaderContainerWebGPU::RenderingShaderContainerWebGPU() {
@@ -114,14 +147,31 @@ uint32_t RenderingShaderContainerWebGPU::_format_version() const {
 bool RenderingShaderContainerWebGPU::_set_code_from_spirv(const ReflectShader &p_shader) {
 	const LocalVector<ReflectShaderStage> &stages = p_shader.shader_stages;
 
-	// The native proof of concept hands SPIR-V straight to wgpu. A browser build would convert it to WGSL here, at bake time.
+	// Native builds can hand SPIR-V straight to wgpu. Browsers need WGSL, which is produced here, at bake time, when
+	// the GODOT_TINT_PATH environment variable points to a Tint executable.
+	String tint;
+#ifndef WEB_ENABLED
+	tint = OS::get_singleton()->get_environment("GODOT_TINT_PATH");
+#endif
 	shaders.resize(stages.size());
 	for (uint32_t i = 0; i < stages.size(); i++) {
 		RenderingShaderContainer::Shader &shader = shaders.ptrw()[i];
 		shader.shader_stage = stages[i].shader_stage;
-		shader.code_compressed_bytes = _strip_buffer_non_readable(stages[i].spirv_data());
+		const Vector<uint8_t> spirv = _strip_buffer_non_readable(stages[i].spirv_data());
 		shader.code_compression_flags = 0;
 		shader.code_decompressed_size = 0;
+#ifndef WEB_ENABLED
+		if (!tint.is_empty()) {
+			String wgsl;
+			ERR_FAIL_COND_V(!_spirv_to_wgsl(tint, spirv, String::utf8(shader_name.get_data()), wgsl), false);
+			const CharString utf8 = wgsl.utf8();
+			shader.code_compressed_bytes.resize(utf8.length());
+			memcpy(shader.code_compressed_bytes.ptrw(), utf8.get_data(), utf8.length());
+			shader.code_compression_flags = COMPRESSION_FLAG_WGSL;
+			continue;
+		}
+#endif
+		shader.code_compressed_bytes = spirv;
 	}
 	return true;
 }

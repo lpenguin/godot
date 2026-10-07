@@ -37,8 +37,7 @@
 #include "drivers/webgpu/rendering_shader_container_webgpu.h"
 #include "servers/rendering/rendering_device_driver.h"
 
-#include <webgpu/webgpu.h>
-#include <webgpu/wgpu.h>
+#include "drivers/webgpu/webgpu_wait.h"
 
 class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 	GDSOFTCLASS(RenderingDeviceDriverWebGPU, RenderingDeviceDriver);
@@ -107,6 +106,7 @@ public:
 	};
 
 	struct FenceInfo {
+		WGPUFuture future = {};
 		volatile bool done = false;
 		bool pending = false;
 	};
@@ -131,7 +131,7 @@ private:
 	FragmentShadingRateCapabilities fsr_capabilities;
 	FragmentDensityMapCapabilities fdm_capabilities;
 
-	void _wait_for(const volatile bool &p_done);
+	void _wait_for(WGPUFuture p_future, const volatile bool &p_done);
 	void _end_compute_pass(CommandBufferInfo *p_cmd);
 	void _ensure_compute_pass(CommandBufferInfo *p_cmd);
 	bool _map_for_read(BufferInfo *p_buffer);

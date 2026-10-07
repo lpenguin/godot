@@ -471,12 +471,8 @@ RenderingDeviceDriverWebGPU::~RenderingDeviceDriverWebGPU() {
 	}
 }
 
-void RenderingDeviceDriverWebGPU::_wait_for(const volatile bool &p_done) {
-	// wgpu-native does not implement wgpuInstanceWaitAny: block on the device and pump callbacks instead.
-	while (!p_done) {
-		wgpuDevicePoll(device, true, nullptr);
-		wgpuInstanceProcessEvents(context_driver->instance_get());
-	}
+void RenderingDeviceDriverWebGPU::_wait_for(WGPUFuture p_future, const volatile bool &p_done) {
+	webgpu_wait(context_driver->instance_get(), device, p_future, p_done);
 }
 
 Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t p_frame_count) {
@@ -497,36 +493,39 @@ Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t 
 		WGPUFeatureName_RG11B10UfloatRenderable,
 		WGPUFeatureName_TimestampQuery,
 		WGPUFeatureName_IndirectFirstInstance,
+#ifndef __EMSCRIPTEN__
 		(WGPUFeatureName)WGPUNativeFeature_Immediates,
 		(WGPUFeatureName)WGPUNativeFeature_TextureFormat16bitNorm,
 		(WGPUFeatureName)WGPUNativeFeature_TextureAdapterSpecificFormatFeatures,
 		(WGPUFeatureName)WGPUNativeFeature_ClearTexture,
+#endif
 	};
 	for (WGPUFeatureName feature : optional_features) {
 		if (wgpuAdapterHasFeature(adapter, feature)) {
 			features.push_back(feature);
 		}
 	}
+#ifndef __EMSCRIPTEN__
 	immediates_supported = wgpuAdapterHasFeature(adapter, (WGPUFeatureName)WGPUNativeFeature_Immediates);
+#else
+	immediates_supported = false;
+#endif
 
 	WGPUDeviceDescriptor device_desc = {};
 	device_desc.label = _sv("Godot WebGPU device");
 	device_desc.requiredFeatureCount = features.size();
 	device_desc.requiredFeatures = features.ptr();
 	device_desc.requiredLimits = &adapter_limits;
-	device_desc.deviceLostCallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+	device_desc.deviceLostCallbackInfo.mode = WGPUCallbackMode_AllowSpontaneous;
 	device_desc.deviceLostCallbackInfo.callback = _on_device_lost;
 	device_desc.uncapturedErrorCallbackInfo.callback = _on_uncaptured_error;
 
 	DeviceRequest request;
 	WGPURequestDeviceCallbackInfo callback_info = {};
-	callback_info.mode = WGPUCallbackMode_AllowProcessEvents;
+	callback_info.mode = WEBGPU_CALLBACK_MODE;
 	callback_info.callback = _on_device_request;
 	callback_info.userdata1 = &request;
-	wgpuAdapterRequestDevice(adapter, &device_desc, callback_info);
-	while (!request.done) {
-		wgpuInstanceProcessEvents(context_driver->instance_get());
-	}
+	webgpu_wait(context_driver->instance_get(), nullptr, wgpuAdapterRequestDevice(adapter, &device_desc, callback_info), request.done);
 	ERR_FAIL_NULL_V_MSG(request.device, ERR_CANT_CREATE, vformat("Failed to create the WebGPU device: %s", request.message));
 
 	device = request.device;
@@ -603,11 +602,10 @@ uint64_t RenderingDeviceDriverWebGPU::buffer_get_allocation_size(BufferID p_buff
 bool RenderingDeviceDriverWebGPU::_map_for_read(BufferInfo *p_buffer) {
 	MapRequest request;
 	WGPUBufferMapCallbackInfo callback_info = {};
-	callback_info.mode = WGPUCallbackMode_AllowProcessEvents;
+	callback_info.mode = WEBGPU_CALLBACK_MODE;
 	callback_info.callback = _on_map;
 	callback_info.userdata1 = &request;
-	wgpuBufferMapAsync(p_buffer->buffer, WGPUMapMode_Read, 0, p_buffer->size, callback_info);
-	_wait_for(request.done);
+	_wait_for(wgpuBufferMapAsync(p_buffer->buffer, WGPUMapMode_Read, 0, p_buffer->size, callback_info), request.done);
 	if (request.status != WGPUMapAsyncStatus_Success) {
 		return false;
 	}
@@ -932,7 +930,7 @@ RenderingDeviceDriver::FenceID RenderingDeviceDriverWebGPU::fence_create() {
 Error RenderingDeviceDriverWebGPU::fence_wait(FenceID p_fence) {
 	FenceInfo *fence = (FenceInfo *)p_fence.id;
 	if (fence->pending) {
-		_wait_for(fence->done);
+		_wait_for(fence->future, fence->done);
 		fence->pending = false;
 	}
 	return OK;
@@ -983,11 +981,11 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 	if (p_cmd_fence) {
 		FenceInfo *fence = (FenceInfo *)p_cmd_fence.id;
 		WGPUQueueWorkDoneCallbackInfo callback_info = {};
-		callback_info.mode = WGPUCallbackMode_AllowProcessEvents;
+		callback_info.mode = WEBGPU_CALLBACK_MODE;
 		callback_info.callback = _on_work_done;
 		callback_info.userdata1 = (void *)&fence->done;
 		fence->done = false;
-		wgpuQueueOnSubmittedWorkDone(queue, callback_info);
+		fence->future = wgpuQueueOnSubmittedWorkDone(queue, callback_info);
 		fence->pending = true;
 	}
 	return OK;
@@ -1110,31 +1108,48 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 	bool failed = false;
 	for (int i = 0; i < container->shaders.size(); i++) {
 		const RenderingShaderContainer::Shader &shader = container->shaders[i];
-		if (shader.code_compression_flags != 0 || (shader.code_compressed_bytes.size() % 4) != 0) {
+		const bool is_wgsl = shader.code_compression_flags == RenderingShaderContainerWebGPU::COMPRESSION_FLAG_WGSL;
+		if (!is_wgsl && (shader.code_compression_flags != 0 || (shader.code_compressed_bytes.size() % 4) != 0)) {
 			ERR_PRINT("WebGPU driver: unexpected shader code encoding.");
 			failed = true;
 			break;
 		}
-		LocalVector<uint32_t> words;
-		words.resize(shader.code_compressed_bytes.size() / 4);
-		memcpy(words.ptr(), shader.code_compressed_bytes.ptr(), shader.code_compressed_bytes.size());
 
-		// Debug aid: GODOT_WEBGPU_DUMP_SPIRV=<dir> writes the SPIR-V that is handed to WebGPU, e.g. to run it through Tint.
+		// Debug aid: GODOT_WEBGPU_DUMP_SPIRV=<dir> writes the code that is handed to WebGPU (.spv or .wgsl).
 		const String dump_dir = OS::get_singleton()->get_environment("GODOT_WEBGPU_DUMP_SPIRV");
 		if (!dump_dir.is_empty()) {
-			Ref<FileAccess> dump = FileAccess::open(dump_dir.path_join(info->name.get_file().get_basename() + ".spv"), FileAccess::WRITE);
+			Ref<FileAccess> dump = FileAccess::open(dump_dir.path_join(info->name.get_file().get_basename() + (is_wgsl ? ".wgsl" : ".spv")), FileAccess::WRITE);
 			if (dump.is_valid()) {
 				dump->store_buffer(shader.code_compressed_bytes.ptr(), shader.code_compressed_bytes.size());
 			}
 		}
 
-		WGPUShaderSourceSPIRV spirv = {};
-		spirv.chain.sType = WGPUSType_ShaderSourceSPIRV;
-		spirv.codeSize = words.size();
-		spirv.code = words.ptr();
 		WGPUShaderModuleDescriptor module_desc = {};
-		module_desc.nextInChain = &spirv.chain;
 		module_desc.label = _sv(name.get_data());
+		LocalVector<uint32_t> words;
+		WGPUShaderSourceWGSL wgsl_source = {};
+#ifndef __EMSCRIPTEN__
+		WGPUShaderSourceSPIRV spirv = {};
+#endif
+		if (is_wgsl) {
+			wgsl_source.chain.sType = WGPUSType_ShaderSourceWGSL;
+			wgsl_source.code.data = (const char *)shader.code_compressed_bytes.ptr();
+			wgsl_source.code.length = shader.code_compressed_bytes.size();
+			module_desc.nextInChain = &wgsl_source.chain;
+		} else {
+#ifndef __EMSCRIPTEN__
+			words.resize(shader.code_compressed_bytes.size() / 4);
+			memcpy(words.ptr(), shader.code_compressed_bytes.ptr(), shader.code_compressed_bytes.size());
+			spirv.chain.sType = WGPUSType_ShaderSourceSPIRV;
+			spirv.codeSize = words.size();
+			spirv.code = words.ptr();
+			module_desc.nextInChain = &spirv.chain;
+#else
+			ERR_PRINT("WebGPU driver: browsers need WGSL shaders; bake the container with GODOT_TINT_PATH set.");
+			failed = true;
+			break;
+#endif
+		}
 		info->modules[shader.shader_stage] = wgpuDeviceCreateShaderModule(device, &module_desc);
 		if (!info->modules[shader.shader_stage]) {
 			failed = true;

@@ -33,6 +33,7 @@
 #include "rendering_context_driver_webgpu.h"
 
 #include "rendering_device_driver_webgpu.h"
+#include "webgpu_wait.h"
 
 #include "core/string/print_string.h"
 
@@ -76,7 +77,11 @@ RenderingContextDriverWebGPU::~RenderingContextDriverWebGPU() {
 
 Error RenderingContextDriverWebGPU::initialize() {
 	const WGPUInstanceFeatureName instance_features[] = {
+#ifdef __EMSCRIPTEN__
+		WGPUInstanceFeatureName_TimedWaitAny,
+#else
 		WGPUInstanceFeatureName_ShaderSourceSPIRV,
+#endif
 	};
 	WGPUInstanceDescriptor instance_desc = {};
 	instance_desc.requiredFeatureCount = std::size(instance_features);
@@ -89,15 +94,10 @@ Error RenderingContextDriverWebGPU::initialize() {
 
 	AdapterRequest request;
 	WGPURequestAdapterCallbackInfo callback_info = {};
-	callback_info.mode = WGPUCallbackMode_AllowProcessEvents;
+	callback_info.mode = WEBGPU_CALLBACK_MODE;
 	callback_info.callback = _on_adapter_request;
 	callback_info.userdata1 = &request;
-	wgpuInstanceRequestAdapter(instance, &options, callback_info);
-
-	// wgpu-native does not implement wgpuInstanceWaitAny, so events are pumped by hand.
-	while (!request.done) {
-		wgpuInstanceProcessEvents(instance);
-	}
+	webgpu_wait(instance, nullptr, wgpuInstanceRequestAdapter(instance, &options, callback_info), request.done);
 	ERR_FAIL_COND_V_MSG(!request.adapter, ERR_CANT_CREATE, vformat("Failed to request a WebGPU adapter: %s", request.message));
 	adapter = request.adapter;
 

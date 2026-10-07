@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  rendering_shader_container_webgpu.h                                   */
+/*  webgpu_wait.h                                                         */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -32,52 +32,36 @@
 
 #ifdef WEBGPU_ENABLED
 
-#include "servers/rendering/rendering_shader_container.h"
+#include <webgpu/webgpu.h>
+#ifndef __EMSCRIPTEN__
+#include <webgpu/wgpu.h>
+#endif
 
-class RenderingShaderContainerWebGPU : public RenderingShaderContainer {
-	GDSOFTCLASS(RenderingShaderContainerWebGPU, RenderingShaderContainer);
+// Waiting for asynchronous WebGPU operations.
+//
+// wgpu-native does not implement wgpuInstanceWaitAny, so natively the callback flag is polled while the
+// device and instance events are pumped. In the browser the main thread must not block: wgpuInstanceWaitAny
+// suspends the WebAssembly stack through JSPI (or Asyncify) until the promise behind the future settles.
 
-public:
-	static const uint32_t FORMAT_VERSION;
+#ifdef __EMSCRIPTEN__
+#define WEBGPU_CALLBACK_MODE WGPUCallbackMode_WaitAnyOnly
+#else
+#define WEBGPU_CALLBACK_MODE WGPUCallbackMode_AllowProcessEvents
+#endif
 
-	// Set in Shader::code_compression_flags when the stored code is WGSL text instead of SPIR-V words.
-	enum CompressionFlagsWebGPU {
-		COMPRESSION_FLAG_WGSL = 0x20000,
-	};
-
-	// Per-binding information that WebGPU bind group layouts need and the generic reflection does not carry.
-	struct BindingExtra {
-		uint32_t image_format = 0; // SpvImageFormat.
-		uint32_t dim = 0; // SpvDim.
-		uint32_t arrayed = 0;
-		uint32_t multisampled = 0;
-		uint32_t depth = 0;
-		uint32_t numeric = 0; // 0: float, 1: signed int, 2: unsigned int.
-		uint32_t readable = 1;
-		uint32_t writable = 1;
-	};
-
-	Vector<BindingExtra> binding_extras;
-
-protected:
-	virtual uint32_t _format() const override;
-	virtual uint32_t _format_version() const override;
-	virtual bool _set_code_from_spirv(const ReflectShader &p_shader) override;
-	virtual void _set_from_shader_reflection_post(const ReflectShader &p_shader) override;
-
-	virtual uint32_t _from_bytes_reflection_binding_uniform_extra_data_start(const uint8_t *p_bytes) override;
-	virtual uint32_t _from_bytes_reflection_binding_uniform_extra_data(const uint8_t *p_bytes, uint32_t p_index) override;
-	virtual uint32_t _to_bytes_reflection_binding_uniform_extra_data(uint8_t *p_bytes, uint32_t p_index) const override;
-
-public:
-	RenderingShaderContainerWebGPU();
-};
-
-class RenderingShaderContainerFormatWebGPU : public RenderingShaderContainerFormat {
-public:
-	virtual Ref<RenderingShaderContainer> create_container() const override;
-	virtual ShaderLanguageVersion get_shader_language_version() const override;
-	virtual ShaderSpirvVersion get_shader_spirv_version() const override;
-};
+inline void webgpu_wait(WGPUInstance p_instance, WGPUDevice p_device, WGPUFuture p_future, const volatile bool &p_done) {
+#ifdef __EMSCRIPTEN__
+	WGPUFutureWaitInfo info = {};
+	info.future = p_future;
+	wgpuInstanceWaitAny(p_instance, 1, &info, UINT64_MAX);
+#else
+	while (!p_done) {
+		if (p_device) {
+			wgpuDevicePoll(p_device, true, nullptr);
+		}
+		wgpuInstanceProcessEvents(p_instance);
+	}
+#endif
+}
 
 #endif // WEBGPU_ENABLED
