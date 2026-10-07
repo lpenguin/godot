@@ -1492,7 +1492,11 @@ void RenderingDeviceDriverWebGPU::command_bind_push_constants(CommandBufferID p_
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	ERR_FAIL_COND(!immediates_supported);
 	if (cmd->compute_pass) {
+#ifndef __EMSCRIPTEN__
 		wgpuComputePassEncoderSetImmediates(cmd->compute_pass, p_first_index * sizeof(uint32_t), p_data.ptr(), p_data.size() * sizeof(uint32_t));
+#else
+		WGPU_UNIMPLEMENTED_VOID();
+#endif
 	} else {
 		WGPU_UNIMPLEMENTED_VOID();
 	}

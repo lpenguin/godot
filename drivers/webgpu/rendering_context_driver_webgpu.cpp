@@ -84,7 +84,7 @@ Error RenderingContextDriverWebGPU::initialize() {
 #endif
 	};
 	WGPUInstanceDescriptor instance_desc = {};
-	instance_desc.requiredFeatureCount = std::size(instance_features);
+	instance_desc.requiredFeatureCount = sizeof(instance_features) / sizeof(instance_features[0]);
 	instance_desc.requiredFeatures = instance_features;
 	instance = wgpuCreateInstance(&instance_desc);
 	ERR_FAIL_NULL_V_MSG(instance, ERR_CANT_CREATE, "Failed to create the WebGPU instance.");
