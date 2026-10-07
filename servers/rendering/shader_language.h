@@ -91,6 +91,7 @@ public:
 		TK_TYPE_SAMPLERCUBE,
 		TK_TYPE_SAMPLERCUBEARRAY,
 		TK_TYPE_SAMPLEREXT,
+		TK_TYPE_SAMPLER2DSHADOW,
 		TK_INTERPOLATION_FLAT,
 		TK_INTERPOLATION_SMOOTH,
 		TK_CONST,
@@ -242,6 +243,10 @@ public:
 		TYPE_SAMPLERCUBE,
 		TYPE_SAMPLERCUBEARRAY,
 		TYPE_SAMPLEREXT,
+		// Hardware comparison-sampler PCF prototype (WoodWorks-Gd patch); combined
+		// sampler2DShadow, not split into texture2D + global sampler like other
+		// sampler types on RD. See docs/sdf_optimization_handoff.md section 8.3.
+		TYPE_SAMPLER2DSHADOW,
 		TYPE_STRUCT,
 		TYPE_MAX
 	};

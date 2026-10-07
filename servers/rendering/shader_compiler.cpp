@@ -42,6 +42,15 @@ static String _mktab(int p_level) {
 
 static String _typestr(SL::DataType p_type) {
 	String type = ShaderLanguage::get_datatype_name(p_type);
+	if (p_type == SL::TYPE_SAMPLER2DSHADOW) {
+		// Hardware comparison-sampler PCF prototype: kept as a combined
+		// sampler2DShadow (texture + comparison sampler in one descriptor),
+		// unlike other sampler types which split into texture2D + a shared
+		// global sampler on Vulkan GLSL. The comparison semantics live in the
+		// sampler object, so there is no separate "texture2DShadow" type to
+		// split into. See docs/sdf_optimization_handoff.md section 8.3.
+		return type;
+	}
 	if (!RS::get_singleton()->is_low_end() && ShaderLanguage::is_sampler_type(p_type)) {
 		type = type.replace("sampler", "texture"); //we use textures instead of samplers in Vulkan GLSL
 	}
@@ -113,6 +122,8 @@ static int _get_datatype_alignment(SL::DataType p_type) {
 		case SL::TYPE_SAMPLERCUBEARRAY:
 			return 16;
 		case SL::TYPE_SAMPLEREXT:
+			return 16;
+		case SL::TYPE_SAMPLER2DSHADOW:
 			return 16;
 		case SL::TYPE_STRUCT:
 			return 0;
@@ -1303,6 +1314,12 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 							}
 
 							if (correct_texture_uniform && !RS::get_singleton()->is_low_end()) {
+							if (shader->uniforms.has(texture_uniform) && shader->uniforms[texture_uniform].type == ShaderLanguage::TYPE_SAMPLER2DSHADOW) {
+								// Hardware comparison-sampler PCF prototype: already a combined
+								// sampler2DShadow, not split into texture2D + a separate sampler
+								// (see _typestr()). See docs/sdf_optimization_handoff.md section 8.3.
+								code += node_code;
+							} else {
 								// Need to map from texture to sampler in order to sample when using Vulkan GLSL.
 								String sampler_name;
 								bool is_depth_texture = false;
@@ -1371,6 +1388,7 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 								}
 
 								code += data_type_name + "(" + node_code + ", " + sampler_name + ")";
+							}
 							} else if (correct_texture_uniform && RS::get_singleton()->is_low_end()) {
 								// Texture function on low end hardware (i.e. OpenGL).
 

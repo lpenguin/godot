@@ -131,6 +131,7 @@ const char *ShaderLanguage::token_names[TK_MAX] = {
 	"TYPE_SAMPLERCUBE",
 	"TYPE_SAMPLERCUBEARRAY",
 	"TYPE_SAMPLEREXT",
+	"TYPE_SAMPLER2DSHADOW",
 	"INTERPOLATION_FLAT",
 	"INTERPOLATION_SMOOTH",
 	"CONST",
@@ -324,6 +325,7 @@ const ShaderLanguage::KeyWord ShaderLanguage::keyword_list[] = {
 	{ TK_TYPE_SAMPLERCUBE, "samplerCube", KCF_SAMPLER_DATATYPE, {}, {} },
 	{ TK_TYPE_SAMPLERCUBEARRAY, "samplerCubeArray", KCF_SAMPLER_DATATYPE, {}, {} },
 	{ TK_TYPE_SAMPLEREXT, "samplerExternalOES", KCF_SAMPLER_DATATYPE, {}, {} },
+	{ TK_TYPE_SAMPLER2DSHADOW, "sampler2DShadow", KCF_SAMPLER_DATATYPE, {}, {} },
 
 	// interpolation qualifiers
 
@@ -1044,7 +1046,8 @@ bool ShaderLanguage::is_token_datatype(TokenType p_type) {
 			p_type == TK_TYPE_USAMPLER3D ||
 			p_type == TK_TYPE_SAMPLERCUBE ||
 			p_type == TK_TYPE_SAMPLERCUBEARRAY ||
-			p_type == TK_TYPE_SAMPLEREXT);
+			p_type == TK_TYPE_SAMPLEREXT ||
+			p_type == TK_TYPE_SAMPLER2DSHADOW);
 }
 
 ShaderLanguage::DataType ShaderLanguage::get_token_datatype(TokenType p_type) {
@@ -1181,6 +1184,8 @@ String ShaderLanguage::get_datatype_name(DataType p_type) {
 			return "samplerCubeArray";
 		case TYPE_SAMPLEREXT:
 			return "samplerExternalOES";
+		case TYPE_SAMPLER2DSHADOW:
+			return "sampler2DShadow";
 		case TYPE_STRUCT:
 			return "struct";
 		case TYPE_MAX:
@@ -3224,6 +3229,9 @@ const ShaderLanguage::BuiltinFuncDef ShaderLanguage::builtin_func_defs[] = {
 	{ "texture", TYPE_VEC4, { TYPE_SAMPLERCUBEARRAY, TYPE_VEC4, TYPE_FLOAT, TYPE_VOID }, { "sampler", "coords", "bias" }, TAG_GLOBAL, false },
 	{ "texture", TYPE_VEC4, { TYPE_SAMPLEREXT, TYPE_VEC2, TYPE_VOID }, { "sampler", "coords" }, TAG_GLOBAL, false },
 	{ "texture", TYPE_VEC4, { TYPE_SAMPLEREXT, TYPE_VEC2, TYPE_FLOAT, TYPE_VOID }, { "sampler", "coords", "bias" }, TAG_GLOBAL, false },
+	// Hardware comparison-sampler PCF prototype: coords.xy is the UV, coords.z
+	// is the receiver depth (Dref) compared against the stored occluder depth.
+	{ "texture", TYPE_FLOAT, { TYPE_SAMPLER2DSHADOW, TYPE_VEC3, TYPE_VOID }, { "sampler", "coords" }, TAG_GLOBAL, false },
 
 	// textureProj
 
@@ -3259,6 +3267,7 @@ const ShaderLanguage::BuiltinFuncDef ShaderLanguage::builtin_func_defs[] = {
 	{ "textureLod", TYPE_UVEC4, { TYPE_USAMPLER3D, TYPE_VEC3, TYPE_FLOAT, TYPE_VOID }, { "sampler", "coords", "lod" }, TAG_GLOBAL, false },
 	{ "textureLod", TYPE_VEC4, { TYPE_SAMPLERCUBE, TYPE_VEC3, TYPE_FLOAT, TYPE_VOID }, { "sampler", "coords", "lod" }, TAG_GLOBAL, false },
 	{ "textureLod", TYPE_VEC4, { TYPE_SAMPLERCUBEARRAY, TYPE_VEC4, TYPE_FLOAT, TYPE_VOID }, { "sampler", "coords", "lod" }, TAG_GLOBAL, false },
+	{ "textureLod", TYPE_FLOAT, { TYPE_SAMPLER2DSHADOW, TYPE_VEC3, TYPE_FLOAT, TYPE_VOID }, { "sampler", "coords", "lod" }, TAG_GLOBAL, false },
 
 	// texelFetch
 
@@ -4606,7 +4615,8 @@ Variant ShaderLanguage::constant_value_to_variant(const Vector<Scalar> &p_value,
 			case ShaderLanguage::TYPE_USAMPLER3D:
 			case ShaderLanguage::TYPE_SAMPLERCUBE:
 			case ShaderLanguage::TYPE_SAMPLERCUBEARRAY:
-			case ShaderLanguage::TYPE_SAMPLEREXT: {
+			case ShaderLanguage::TYPE_SAMPLEREXT:
+			case ShaderLanguage::TYPE_SAMPLER2DSHADOW: {
 				// Texture types, likely not relevant here.
 				break;
 			}
@@ -5083,7 +5093,8 @@ PropertyInfo ShaderLanguage::uniform_to_property_info(const ShaderNode::Uniform 
 			break;
 		case ShaderLanguage::TYPE_SAMPLER2D:
 		case ShaderLanguage::TYPE_ISAMPLER2D:
-		case ShaderLanguage::TYPE_USAMPLER2D: {
+		case ShaderLanguage::TYPE_USAMPLER2D:
+		case ShaderLanguage::TYPE_SAMPLER2DSHADOW: {
 			if (p_uniform.array_size > 0) {
 				pi.type = Variant::ARRAY;
 				pi.hint = PROPERTY_HINT_ARRAY_TYPE;
@@ -5207,6 +5218,8 @@ uint32_t ShaderLanguage::get_datatype_size(ShaderLanguage::DataType p_type) {
 		case TYPE_SAMPLERCUBEARRAY:
 			return 16;
 		case TYPE_SAMPLEREXT:
+			return 16;
+		case TYPE_SAMPLER2DSHADOW:
 			return 16;
 		case TYPE_STRUCT:
 			return 0;
