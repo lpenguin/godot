@@ -450,6 +450,167 @@ bool _format_is_depth_stencil(RenderingDeviceCommons::DataFormat p_format) {
 	}
 }
 
+
+WGPUVertexFormat _to_wgpu_vertex_format(RenderingDeviceCommons::DataFormat p_format) {
+	using RDC = RenderingDeviceCommons;
+	switch (p_format) {
+		case RDC::DATA_FORMAT_R32_SFLOAT:
+			return WGPUVertexFormat_Float32;
+		case RDC::DATA_FORMAT_R32G32_SFLOAT:
+			return WGPUVertexFormat_Float32x2;
+		case RDC::DATA_FORMAT_R32G32B32_SFLOAT:
+			return WGPUVertexFormat_Float32x3;
+		case RDC::DATA_FORMAT_R32G32B32A32_SFLOAT:
+			return WGPUVertexFormat_Float32x4;
+		case RDC::DATA_FORMAT_R32_UINT:
+			return WGPUVertexFormat_Uint32;
+		case RDC::DATA_FORMAT_R32G32_UINT:
+			return WGPUVertexFormat_Uint32x2;
+		case RDC::DATA_FORMAT_R32G32B32_UINT:
+			return WGPUVertexFormat_Uint32x3;
+		case RDC::DATA_FORMAT_R32G32B32A32_UINT:
+			return WGPUVertexFormat_Uint32x4;
+		case RDC::DATA_FORMAT_R32_SINT:
+			return WGPUVertexFormat_Sint32;
+		case RDC::DATA_FORMAT_R32G32_SINT:
+			return WGPUVertexFormat_Sint32x2;
+		case RDC::DATA_FORMAT_R32G32B32_SINT:
+			return WGPUVertexFormat_Sint32x3;
+		case RDC::DATA_FORMAT_R32G32B32A32_SINT:
+			return WGPUVertexFormat_Sint32x4;
+		case RDC::DATA_FORMAT_R8G8_UNORM:
+			return WGPUVertexFormat_Unorm8x2;
+		case RDC::DATA_FORMAT_R8G8B8A8_UNORM:
+			return WGPUVertexFormat_Unorm8x4;
+		case RDC::DATA_FORMAT_R8G8_SNORM:
+			return WGPUVertexFormat_Snorm8x2;
+		case RDC::DATA_FORMAT_R8G8B8A8_SNORM:
+			return WGPUVertexFormat_Snorm8x4;
+		case RDC::DATA_FORMAT_R8G8_UINT:
+			return WGPUVertexFormat_Uint8x2;
+		case RDC::DATA_FORMAT_R8G8B8A8_UINT:
+			return WGPUVertexFormat_Uint8x4;
+		case RDC::DATA_FORMAT_R8G8_SINT:
+			return WGPUVertexFormat_Sint8x2;
+		case RDC::DATA_FORMAT_R8G8B8A8_SINT:
+			return WGPUVertexFormat_Sint8x4;
+		case RDC::DATA_FORMAT_R16G16_UNORM:
+			return WGPUVertexFormat_Unorm16x2;
+		case RDC::DATA_FORMAT_R16G16B16A16_UNORM:
+			return WGPUVertexFormat_Unorm16x4;
+		case RDC::DATA_FORMAT_R16G16_SNORM:
+			return WGPUVertexFormat_Snorm16x2;
+		case RDC::DATA_FORMAT_R16G16B16A16_SNORM:
+			return WGPUVertexFormat_Snorm16x4;
+		case RDC::DATA_FORMAT_R16G16_UINT:
+			return WGPUVertexFormat_Uint16x2;
+		case RDC::DATA_FORMAT_R16G16B16A16_UINT:
+			return WGPUVertexFormat_Uint16x4;
+		case RDC::DATA_FORMAT_R16G16_SINT:
+			return WGPUVertexFormat_Sint16x2;
+		case RDC::DATA_FORMAT_R16G16B16A16_SINT:
+			return WGPUVertexFormat_Sint16x4;
+		case RDC::DATA_FORMAT_R16G16_SFLOAT:
+			return WGPUVertexFormat_Float16x2;
+		case RDC::DATA_FORMAT_R16G16B16A16_SFLOAT:
+			return WGPUVertexFormat_Float16x4;
+		case RDC::DATA_FORMAT_A2B10G10R10_UNORM_PACK32:
+			return WGPUVertexFormat_Unorm10_10_10_2;
+		default:
+			return WGPUVertexFormat_Float32x4;
+	}
+}
+
+WGPUBlendFactor _to_wgpu_blend_factor(RenderingDeviceCommons::BlendFactor p_factor) {
+	using RDC = RenderingDeviceCommons;
+	switch (p_factor) {
+		case RDC::BLEND_FACTOR_ZERO:
+			return WGPUBlendFactor_Zero;
+		case RDC::BLEND_FACTOR_ONE:
+			return WGPUBlendFactor_One;
+		case RDC::BLEND_FACTOR_SRC_COLOR:
+			return WGPUBlendFactor_Src;
+		case RDC::BLEND_FACTOR_ONE_MINUS_SRC_COLOR:
+			return WGPUBlendFactor_OneMinusSrc;
+		case RDC::BLEND_FACTOR_DST_COLOR:
+			return WGPUBlendFactor_Dst;
+		case RDC::BLEND_FACTOR_ONE_MINUS_DST_COLOR:
+			return WGPUBlendFactor_OneMinusDst;
+		case RDC::BLEND_FACTOR_SRC_ALPHA:
+			return WGPUBlendFactor_SrcAlpha;
+		case RDC::BLEND_FACTOR_ONE_MINUS_SRC_ALPHA:
+			return WGPUBlendFactor_OneMinusSrcAlpha;
+		case RDC::BLEND_FACTOR_DST_ALPHA:
+			return WGPUBlendFactor_DstAlpha;
+		case RDC::BLEND_FACTOR_ONE_MINUS_DST_ALPHA:
+			return WGPUBlendFactor_OneMinusDstAlpha;
+		case RDC::BLEND_FACTOR_CONSTANT_COLOR:
+		case RDC::BLEND_FACTOR_CONSTANT_ALPHA:
+			return WGPUBlendFactor_Constant;
+		case RDC::BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR:
+		case RDC::BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA:
+			return WGPUBlendFactor_OneMinusConstant;
+		case RDC::BLEND_FACTOR_SRC_ALPHA_SATURATE:
+			return WGPUBlendFactor_SrcAlphaSaturated;
+		default:
+			return WGPUBlendFactor_One;
+	}
+}
+
+WGPUBlendOperation _to_wgpu_blend_operation(RenderingDeviceCommons::BlendOperation p_operation) {
+	using RDC = RenderingDeviceCommons;
+	switch (p_operation) {
+		case RDC::BLEND_OP_SUBTRACT:
+			return WGPUBlendOperation_Subtract;
+		case RDC::BLEND_OP_REVERSE_SUBTRACT:
+			return WGPUBlendOperation_ReverseSubtract;
+		case RDC::BLEND_OP_MINIMUM:
+			return WGPUBlendOperation_Min;
+		case RDC::BLEND_OP_MAXIMUM:
+			return WGPUBlendOperation_Max;
+		default:
+			return WGPUBlendOperation_Add;
+	}
+}
+
+WGPUStencilOperation _to_wgpu_stencil_operation(RenderingDeviceCommons::StencilOperation p_operation) {
+	using RDC = RenderingDeviceCommons;
+	switch (p_operation) {
+		case RDC::STENCIL_OP_ZERO:
+			return WGPUStencilOperation_Zero;
+		case RDC::STENCIL_OP_REPLACE:
+			return WGPUStencilOperation_Replace;
+		case RDC::STENCIL_OP_INCREMENT_AND_CLAMP:
+			return WGPUStencilOperation_IncrementClamp;
+		case RDC::STENCIL_OP_DECREMENT_AND_CLAMP:
+			return WGPUStencilOperation_DecrementClamp;
+		case RDC::STENCIL_OP_INVERT:
+			return WGPUStencilOperation_Invert;
+		case RDC::STENCIL_OP_INCREMENT_AND_WRAP:
+			return WGPUStencilOperation_IncrementWrap;
+		case RDC::STENCIL_OP_DECREMENT_AND_WRAP:
+			return WGPUStencilOperation_DecrementWrap;
+		default:
+			return WGPUStencilOperation_Keep;
+	}
+}
+
+bool _format_has_stencil(WGPUTextureFormat p_format) {
+	return p_format == WGPUTextureFormat_Stencil8 || p_format == WGPUTextureFormat_Depth24PlusStencil8 || p_format == WGPUTextureFormat_Depth32FloatStencil8;
+}
+
+bool _format_has_depth(WGPUTextureFormat p_format) {
+	return p_format == WGPUTextureFormat_Depth16Unorm || p_format == WGPUTextureFormat_Depth24Plus || p_format == WGPUTextureFormat_Depth24PlusStencil8 || p_format == WGPUTextureFormat_Depth32Float || p_format == WGPUTextureFormat_Depth32FloatStencil8;
+}
+
+WGPULoadOp _to_wgpu_load_op(RenderingDeviceDriver::AttachmentLoadOp p_op) {
+	return p_op == RenderingDeviceDriver::ATTACHMENT_LOAD_OP_LOAD ? WGPULoadOp_Load : WGPULoadOp_Clear;
+}
+
+WGPUStoreOp _to_wgpu_store_op(RenderingDeviceDriver::AttachmentStoreOp p_op) {
+	return p_op == RenderingDeviceDriver::ATTACHMENT_STORE_OP_STORE ? WGPUStoreOp_Store : WGPUStoreOp_Discard;
+}
+
 } // namespace
 
 #define WGPU_UNIMPLEMENTED_VOID() ERR_FAIL_MSG(vformat("WebGPU driver: %s is not implemented yet.", __FUNCTION__))
@@ -910,10 +1071,49 @@ bool RenderingDeviceDriverWebGPU::sampler_is_format_supported_for_filter(DataFor
 // ----- Vertex formats (render path not implemented yet) -----
 
 RenderingDeviceDriver::VertexFormatID RenderingDeviceDriverWebGPU::vertex_format_create(Span<VertexAttribute> p_vertex_attribs, const VertexAttributeBindingsMap &p_vertex_bindings) {
-	WGPU_UNIMPLEMENTED(VertexFormatID());
+	VertexFormatInfo *info = memnew(VertexFormatInfo);
+
+	uint32_t slot_count = 0;
+	LocalVector<uint32_t> bindings;
+	for (uint32_t i = 0; i < p_vertex_attribs.size(); i++) {
+		const uint32_t binding = p_vertex_attribs[i].binding == UINT32_MAX ? i : p_vertex_attribs[i].binding;
+		bindings.push_back(binding);
+		slot_count = MAX(slot_count, binding + 1);
+	}
+
+	info->layouts.resize(slot_count);
+	info->attributes.resize(slot_count);
+	for (uint32_t slot = 0; slot < slot_count; slot++) {
+		info->layouts[slot] = {};
+		info->layouts[slot].stepMode = WGPUVertexStepMode_Vertex;
+	}
+	for (uint32_t i = 0; i < p_vertex_attribs.size(); i++) {
+		const VertexAttribute &attribute = p_vertex_attribs[i];
+		const uint32_t slot = bindings[i];
+		WGPUVertexAttribute wgpu_attribute = {};
+		wgpu_attribute.format = _to_wgpu_vertex_format(attribute.format);
+		wgpu_attribute.offset = attribute.offset;
+		wgpu_attribute.shaderLocation = attribute.location;
+		info->attributes[slot].push_back(wgpu_attribute);
+
+		uint32_t stride = attribute.stride;
+		VertexFrequency frequency = attribute.frequency;
+		if (const VertexAttributeBinding *binding_info = p_vertex_bindings.getptr(slot)) {
+			stride = binding_info->stride;
+			frequency = binding_info->frequency;
+		}
+		info->layouts[slot].arrayStride = stride;
+		info->layouts[slot].stepMode = frequency == VERTEX_FREQUENCY_INSTANCE ? WGPUVertexStepMode_Instance : WGPUVertexStepMode_Vertex;
+	}
+	for (uint32_t slot = 0; slot < slot_count; slot++) {
+		info->layouts[slot].attributeCount = info->attributes[slot].size();
+		info->layouts[slot].attributes = info->attributes[slot].ptr();
+	}
+	return VertexFormatID(info);
 }
 
 void RenderingDeviceDriverWebGPU::vertex_format_free(VertexFormatID p_vertex_format) {
+	memdelete((VertexFormatInfo *)p_vertex_format.id);
 }
 
 // ----- Barriers: WebGPU tracks resource usage itself. -----
@@ -1030,6 +1230,7 @@ bool RenderingDeviceDriverWebGPU::command_buffer_begin_secondary(CommandBufferID
 
 void RenderingDeviceDriverWebGPU::command_buffer_end(CommandBufferID p_cmd_buffer) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	_end_render_pass(cmd);
 	_end_compute_pass(cmd);
 	if (cmd->encoder) {
 		WGPUCommandBufferDescriptor desc = {};
@@ -1041,6 +1242,18 @@ void RenderingDeviceDriverWebGPU::command_buffer_end(CommandBufferID p_cmd_buffe
 
 void RenderingDeviceDriverWebGPU::command_buffer_execute_secondary(CommandBufferID p_cmd_buffer, VectorView<CommandBufferID> p_secondary_cmd_buffers) {
 	WGPU_UNIMPLEMENTED_VOID();
+}
+
+void RenderingDeviceDriverWebGPU::_end_render_pass(CommandBufferInfo *p_cmd) {
+	if (p_cmd->render_pass) {
+		wgpuRenderPassEncoderEnd(p_cmd->render_pass);
+		wgpuRenderPassEncoderRelease(p_cmd->render_pass);
+		p_cmd->render_pass = nullptr;
+	}
+	for (WGPUTextureView view : p_cmd->temporary_views) {
+		wgpuTextureViewRelease(view);
+	}
+	p_cmd->temporary_views.clear();
 }
 
 void RenderingDeviceDriverWebGPU::_end_compute_pass(CommandBufferInfo *p_cmd) {
@@ -1085,10 +1298,18 @@ void RenderingDeviceDriverWebGPU::swap_chain_free(SwapChainID p_swap_chain) {
 }
 
 RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGPU::framebuffer_create(RenderPassID p_render_pass, VectorView<TextureID> p_attachments, uint32_t p_width, uint32_t p_height) {
-	WGPU_UNIMPLEMENTED(FramebufferID());
+	FramebufferInfo *info = memnew(FramebufferInfo);
+	info->render_pass = (RenderPassInfo *)p_render_pass.id;
+	info->width = p_width;
+	info->height = p_height;
+	for (uint32_t i = 0; i < p_attachments.size(); i++) {
+		info->attachments.push_back((TextureInfo *)p_attachments[i].id);
+	}
+	return FramebufferID(info);
 }
 
 void RenderingDeviceDriverWebGPU::framebuffer_free(FramebufferID p_framebuffer) {
+	memdelete((FramebufferInfo *)p_framebuffer.id);
 }
 
 // ----- Shaders -----
@@ -1520,30 +1741,115 @@ Vector<uint8_t> RenderingDeviceDriverWebGPU::pipeline_cache_serialize() {
 // ----- Render passes and drawing (not implemented yet) -----
 
 RenderingDeviceDriver::RenderPassID RenderingDeviceDriverWebGPU::render_pass_create(VectorView<Attachment> p_attachments, VectorView<Subpass> p_subpasses, VectorView<SubpassDependency> p_subpass_dependencies, uint32_t p_view_count, AttachmentReference p_fragment_density_map_attachment) {
-	WGPU_UNIMPLEMENTED(RenderPassID());
+	ERR_FAIL_COND_V_MSG(p_view_count > 1, RenderPassID(), "WebGPU driver: multiview is not supported.");
+	ERR_FAIL_COND_V_MSG(p_subpasses.size() != 1, RenderPassID(), "WebGPU driver: only render passes with a single subpass are supported.");
+	RenderPassInfo *info = memnew(RenderPassInfo);
+	for (uint32_t i = 0; i < p_attachments.size(); i++) {
+		info->attachments.push_back(p_attachments[i]);
+	}
+	for (uint32_t i = 0; i < p_subpasses.size(); i++) {
+		info->subpasses.push_back(p_subpasses[i]);
+	}
+	return RenderPassID(info);
 }
 
 void RenderingDeviceDriverWebGPU::render_pass_free(RenderPassID p_render_pass) {
+	memdelete((RenderPassInfo *)p_render_pass.id);
 }
 
 void RenderingDeviceDriverWebGPU::command_begin_render_pass(CommandBufferID p_cmd_buffer, RenderPassID p_render_pass, FramebufferID p_framebuffer, CommandBufferType p_cmd_buffer_type, const Rect2i &p_rect, VectorView<RenderPassClearValue> p_clear_values) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	const RenderPassInfo *pass = (const RenderPassInfo *)p_render_pass.id;
+	const FramebufferInfo *framebuffer = (const FramebufferInfo *)p_framebuffer.id;
+	_end_compute_pass(cmd);
+
+	// A render target must be a single mip level and layer of a 2D texture.
+	auto render_view = [&](const TextureInfo *p_texture) -> WGPUTextureView {
+		if (p_texture->view_mip_count == 1 && p_texture->view_layer_count == 1 && p_texture->view_dimension == WGPUTextureViewDimension_2D) {
+			return p_texture->view;
+		}
+		WGPUTextureViewDescriptor view_desc = {};
+		view_desc.format = p_texture->wgpu_format;
+		view_desc.dimension = WGPUTextureViewDimension_2D;
+		view_desc.baseMipLevel = p_texture->base_mip;
+		view_desc.mipLevelCount = 1;
+		view_desc.baseArrayLayer = p_texture->base_layer;
+		view_desc.arrayLayerCount = 1;
+		view_desc.aspect = WGPUTextureAspect_All;
+		view_desc.usage = WGPUTextureUsage_None;
+		WGPUTextureView view = wgpuTextureCreateView(p_texture->texture, &view_desc);
+		cmd->temporary_views.push_back(view);
+		return view;
+	};
+
+	const Subpass &subpass = pass->subpasses[0];
+	LocalVector<WGPURenderPassColorAttachment> colors;
+	for (uint32_t i = 0; i < subpass.color_references.size(); i++) {
+		WGPURenderPassColorAttachment color = {};
+		color.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+		const uint32_t index = subpass.color_references[i].attachment;
+		if (index != AttachmentReference::UNUSED) {
+			const Attachment &attachment = pass->attachments[index];
+			color.view = render_view(framebuffer->attachments[index]);
+			color.loadOp = _to_wgpu_load_op(attachment.load_op);
+			color.storeOp = _to_wgpu_store_op(attachment.store_op);
+			if (index < p_clear_values.size()) {
+				const Color &clear = p_clear_values[index].color;
+				color.clearValue = { clear.r, clear.g, clear.b, clear.a };
+			}
+		}
+		colors.push_back(color);
+	}
+
+	WGPURenderPassDepthStencilAttachment depth_stencil = {};
+	bool has_depth_stencil = false;
+	const uint32_t depth_index = subpass.depth_stencil_reference.attachment;
+	if (depth_index != AttachmentReference::UNUSED) {
+		const Attachment &attachment = pass->attachments[depth_index];
+		const TextureInfo *texture = framebuffer->attachments[depth_index];
+		has_depth_stencil = true;
+		depth_stencil.view = render_view(texture);
+		if (_format_has_depth(texture->wgpu_format)) {
+			depth_stencil.depthLoadOp = _to_wgpu_load_op(attachment.load_op);
+			depth_stencil.depthStoreOp = _to_wgpu_store_op(attachment.store_op);
+		}
+		if (_format_has_stencil(texture->wgpu_format)) {
+			depth_stencil.stencilLoadOp = _to_wgpu_load_op(attachment.stencil_load_op);
+			depth_stencil.stencilStoreOp = _to_wgpu_store_op(attachment.stencil_store_op);
+		}
+		if (depth_index < p_clear_values.size()) {
+			depth_stencil.depthClearValue = p_clear_values[depth_index].depth;
+			depth_stencil.stencilClearValue = p_clear_values[depth_index].stencil;
+		}
+	}
+
+	WGPURenderPassDescriptor desc = {};
+	desc.colorAttachmentCount = colors.size();
+	desc.colorAttachments = colors.ptr();
+	desc.depthStencilAttachment = has_depth_stencil ? &depth_stencil : nullptr;
+	cmd->render_pass = wgpuCommandEncoderBeginRenderPass(cmd->encoder, &desc);
 }
 
 void RenderingDeviceDriverWebGPU::command_end_render_pass(CommandBufferID p_cmd_buffer) {
-	WGPU_UNIMPLEMENTED_VOID();
+	_end_render_pass((CommandBufferInfo *)p_cmd_buffer.id);
 }
 
 void RenderingDeviceDriverWebGPU::command_next_render_subpass(CommandBufferID p_cmd_buffer, CommandBufferType p_cmd_buffer_type) {
-	WGPU_UNIMPLEMENTED_VOID();
+	ERR_FAIL_MSG("WebGPU driver: render passes with several subpasses are not supported.");
 }
 
 void RenderingDeviceDriverWebGPU::command_render_set_viewport(CommandBufferID p_cmd_buffer, VectorView<Rect2i> p_viewports) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	ERR_FAIL_COND(p_viewports.size() != 1);
+	const Rect2i &viewport = p_viewports[0];
+	wgpuRenderPassEncoderSetViewport(cmd->render_pass, viewport.position.x, viewport.position.y, viewport.size.x, viewport.size.y, 0.0f, 1.0f);
 }
 
 void RenderingDeviceDriverWebGPU::command_render_set_scissor(CommandBufferID p_cmd_buffer, VectorView<Rect2i> p_scissors) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	ERR_FAIL_COND(p_scissors.size() != 1);
+	const Rect2i &scissor = p_scissors[0];
+	wgpuRenderPassEncoderSetScissorRect(cmd->render_pass, MAX(scissor.position.x, 0), MAX(scissor.position.y, 0), scissor.size.x, scissor.size.y);
 }
 
 void RenderingDeviceDriverWebGPU::command_render_clear_attachments(CommandBufferID p_cmd_buffer, VectorView<AttachmentClear> p_attachment_clears, VectorView<Rect2i> p_rects) {
@@ -1551,23 +1857,36 @@ void RenderingDeviceDriverWebGPU::command_render_clear_attachments(CommandBuffer
 }
 
 void RenderingDeviceDriverWebGPU::command_bind_render_pipeline(CommandBufferID p_cmd_buffer, PipelineID p_pipeline) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	const PipelineInfo *pipeline = (const PipelineInfo *)p_pipeline.id;
+	wgpuRenderPassEncoderSetPipeline(cmd->render_pass, pipeline->render);
+	wgpuRenderPassEncoderSetStencilReference(cmd->render_pass, pipeline->stencil_reference);
 }
 
 void RenderingDeviceDriverWebGPU::command_bind_render_uniform_sets(CommandBufferID p_cmd_buffer, VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count, uint32_t p_dynamic_offsets) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	for (uint32_t i = 0; i < p_set_count; i++) {
+		const UniformSetInfo *set = (const UniformSetInfo *)p_uniform_sets[i].id;
+		wgpuRenderPassEncoderSetBindGroup(cmd->render_pass, p_first_set_index + i, set->bind_group, 0, nullptr);
+	}
 }
 
 void RenderingDeviceDriverWebGPU::command_render_draw(CommandBufferID p_cmd_buffer, uint32_t p_vertex_count, uint32_t p_instance_count, uint32_t p_base_vertex, uint32_t p_first_instance) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	wgpuRenderPassEncoderDraw(cmd->render_pass, p_vertex_count, p_instance_count, p_base_vertex, p_first_instance);
 }
 
 void RenderingDeviceDriverWebGPU::command_render_draw_indexed(CommandBufferID p_cmd_buffer, uint32_t p_index_count, uint32_t p_instance_count, uint32_t p_first_index, int32_t p_vertex_offset, uint32_t p_first_instance) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	wgpuRenderPassEncoderDrawIndexed(cmd->render_pass, p_index_count, p_instance_count, p_first_index, p_vertex_offset, p_first_instance);
 }
 
 void RenderingDeviceDriverWebGPU::command_render_draw_indexed_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	const BufferInfo *buffer = (const BufferInfo *)p_indirect_buffer.id;
+	for (uint32_t i = 0; i < p_draw_count; i++) {
+		wgpuRenderPassEncoderDrawIndexedIndirect(cmd->render_pass, buffer->buffer, p_offset + (uint64_t)i * p_stride);
+	}
 }
 
 void RenderingDeviceDriverWebGPU::command_render_draw_indexed_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
@@ -1575,7 +1894,11 @@ void RenderingDeviceDriverWebGPU::command_render_draw_indexed_indirect_count(Com
 }
 
 void RenderingDeviceDriverWebGPU::command_render_draw_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	const BufferInfo *buffer = (const BufferInfo *)p_indirect_buffer.id;
+	for (uint32_t i = 0; i < p_draw_count; i++) {
+		wgpuRenderPassEncoderDrawIndirect(cmd->render_pass, buffer->buffer, p_offset + (uint64_t)i * p_stride);
+	}
 }
 
 void RenderingDeviceDriverWebGPU::command_render_draw_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
@@ -1583,23 +1906,151 @@ void RenderingDeviceDriverWebGPU::command_render_draw_indirect_count(CommandBuff
 }
 
 void RenderingDeviceDriverWebGPU::command_render_bind_vertex_buffers(CommandBufferID p_cmd_buffer, uint32_t p_binding_count, const BufferID *p_buffers, const uint64_t *p_offsets, uint64_t p_dynamic_offsets) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	for (uint32_t i = 0; i < p_binding_count; i++) {
+		const BufferInfo *buffer = (const BufferInfo *)p_buffers[i].id;
+		wgpuRenderPassEncoderSetVertexBuffer(cmd->render_pass, i, buffer->buffer, p_offsets[i], WGPU_WHOLE_SIZE);
+	}
 }
 
 void RenderingDeviceDriverWebGPU::command_render_bind_index_buffer(CommandBufferID p_cmd_buffer, BufferID p_buffer, IndexBufferFormat p_format, uint64_t p_offset) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	const BufferInfo *buffer = (const BufferInfo *)p_buffer.id;
+	wgpuRenderPassEncoderSetIndexBuffer(cmd->render_pass, buffer->buffer, p_format == INDEX_BUFFER_FORMAT_UINT16 ? WGPUIndexFormat_Uint16 : WGPUIndexFormat_Uint32, p_offset, WGPU_WHOLE_SIZE);
 }
 
 void RenderingDeviceDriverWebGPU::command_render_set_blend_constants(CommandBufferID p_cmd_buffer, const Color &p_constants) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	const WGPUColor color = { p_constants.r, p_constants.g, p_constants.b, p_constants.a };
+	wgpuRenderPassEncoderSetBlendConstant(cmd->render_pass, &color);
 }
 
 void RenderingDeviceDriverWebGPU::command_render_set_line_width(CommandBufferID p_cmd_buffer, float p_width) {
-	WGPU_UNIMPLEMENTED_VOID();
+	// WebGPU only draws 1 pixel wide lines.
 }
 
 RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_create(ShaderID p_shader, VertexFormatID p_vertex_format, RenderPrimitive p_render_primitive, PipelineRasterizationState p_rasterization_state, PipelineMultisampleState p_multisample_state, PipelineDepthStencilState p_depth_stencil_state, PipelineColorBlendState p_blend_state, VectorView<int32_t> p_color_attachments, BitField<PipelineDynamicStateFlags> p_dynamic_state, RenderPassID p_render_pass, uint32_t p_render_subpass, VectorView<PipelineSpecializationConstant> p_specialization_constants) {
-	WGPU_UNIMPLEMENTED(PipelineID());
+	ShaderInfo *shader = (ShaderInfo *)p_shader.id;
+	const RenderPassInfo *pass = (const RenderPassInfo *)p_render_pass.id;
+	ERR_FAIL_NULL_V(shader->modules[SHADER_STAGE_VERTEX], PipelineID());
+	ERR_FAIL_COND_V(p_render_subpass != 0 || pass->subpasses.is_empty(), PipelineID());
+	ERR_FAIL_COND_V_MSG(p_specialization_constants.size() > 0, PipelineID(), "WebGPU driver: specialization constants are not supported for render pipelines yet.");
+	const Subpass &subpass = pass->subpasses[0];
+
+	WGPURenderPipelineDescriptor desc = {};
+	desc.layout = shader->pipeline_layout;
+	desc.vertex.module = shader->modules[SHADER_STAGE_VERTEX];
+	desc.vertex.entryPoint = _sv("main");
+	if (p_vertex_format) {
+		const VertexFormatInfo *vertex_format = (const VertexFormatInfo *)p_vertex_format.id;
+		desc.vertex.bufferCount = vertex_format->layouts.size();
+		desc.vertex.buffers = vertex_format->layouts.ptr();
+	}
+
+	switch (p_render_primitive) {
+		case RENDER_PRIMITIVE_POINTS:
+			desc.primitive.topology = WGPUPrimitiveTopology_PointList;
+			break;
+		case RENDER_PRIMITIVE_LINES:
+			desc.primitive.topology = WGPUPrimitiveTopology_LineList;
+			break;
+		case RENDER_PRIMITIVE_LINESTRIPS:
+			desc.primitive.topology = WGPUPrimitiveTopology_LineStrip;
+			break;
+		case RENDER_PRIMITIVE_TRIANGLES:
+			desc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+			break;
+		case RENDER_PRIMITIVE_TRIANGLE_STRIPS:
+		case RENDER_PRIMITIVE_TRIANGLE_STRIPS_WITH_RESTART_INDEX:
+			desc.primitive.topology = WGPUPrimitiveTopology_TriangleStrip;
+			break;
+		default:
+			ERR_FAIL_V_MSG(PipelineID(), "WebGPU driver: unsupported primitive topology.");
+	}
+	desc.primitive.frontFace = p_rasterization_state.front_face == POLYGON_FRONT_FACE_COUNTER_CLOCKWISE ? WGPUFrontFace_CCW : WGPUFrontFace_CW;
+	switch (p_rasterization_state.cull_mode) {
+		case POLYGON_CULL_FRONT:
+			desc.primitive.cullMode = WGPUCullMode_Front;
+			break;
+		case POLYGON_CULL_BACK:
+			desc.primitive.cullMode = WGPUCullMode_Back;
+			break;
+		default:
+			desc.primitive.cullMode = WGPUCullMode_None;
+			break;
+	}
+
+	WGPUDepthStencilState depth_stencil = {};
+	const uint32_t depth_index = subpass.depth_stencil_reference.attachment;
+	uint32_t stencil_reference = 0;
+	if (depth_index != AttachmentReference::UNUSED) {
+		depth_stencil.format = _to_wgpu_format(pass->attachments[depth_index].format);
+		depth_stencil.depthWriteEnabled = p_depth_stencil_state.enable_depth_write ? WGPUOptionalBool_True : WGPUOptionalBool_False;
+		depth_stencil.depthCompare = p_depth_stencil_state.enable_depth_test ? _to_wgpu_compare(p_depth_stencil_state.depth_compare_operator) : WGPUCompareFunction_Always;
+		depth_stencil.depthBias = (int32_t)Math::round(p_rasterization_state.depth_bias_enabled ? p_rasterization_state.depth_bias_constant_factor : 0.0f);
+		depth_stencil.depthBiasSlopeScale = p_rasterization_state.depth_bias_enabled ? p_rasterization_state.depth_bias_slope_factor : 0.0f;
+		depth_stencil.depthBiasClamp = p_rasterization_state.depth_bias_enabled ? p_rasterization_state.depth_bias_clamp : 0.0f;
+		depth_stencil.stencilReadMask = 0xFFFFFFFF;
+		depth_stencil.stencilWriteMask = 0xFFFFFFFF;
+		depth_stencil.stencilFront.compare = WGPUCompareFunction_Always;
+		depth_stencil.stencilFront.failOp = WGPUStencilOperation_Keep;
+		depth_stencil.stencilFront.depthFailOp = WGPUStencilOperation_Keep;
+		depth_stencil.stencilFront.passOp = WGPUStencilOperation_Keep;
+		depth_stencil.stencilBack = depth_stencil.stencilFront;
+		if (p_depth_stencil_state.enable_stencil) {
+			const PipelineDepthStencilState::StencilOperationState &front = p_depth_stencil_state.front_op;
+			const PipelineDepthStencilState::StencilOperationState &back = p_depth_stencil_state.back_op;
+			depth_stencil.stencilFront = { _to_wgpu_compare(front.compare), _to_wgpu_stencil_operation(front.fail), _to_wgpu_stencil_operation(front.depth_fail), _to_wgpu_stencil_operation(front.pass) };
+			depth_stencil.stencilBack = { _to_wgpu_compare(back.compare), _to_wgpu_stencil_operation(back.fail), _to_wgpu_stencil_operation(back.depth_fail), _to_wgpu_stencil_operation(back.pass) };
+			depth_stencil.stencilReadMask = front.compare_mask;
+			depth_stencil.stencilWriteMask = front.write_mask;
+			stencil_reference = front.reference;
+		}
+		desc.depthStencil = &depth_stencil;
+	}
+
+	desc.multisample.count = (uint32_t)1 << (uint32_t)p_multisample_state.sample_count;
+	desc.multisample.mask = 0xFFFFFFFF;
+	desc.multisample.alphaToCoverageEnabled = p_multisample_state.enable_alpha_to_coverage;
+
+	LocalVector<WGPUColorTargetState> targets;
+	LocalVector<WGPUBlendState> blends;
+	blends.resize(subpass.color_references.size());
+	WGPUFragmentState fragment = {};
+	for (uint32_t i = 0; i < subpass.color_references.size(); i++) {
+		WGPUColorTargetState target = {};
+		const uint32_t index = subpass.color_references[i].attachment;
+		if (index != AttachmentReference::UNUSED) {
+			target.format = _to_wgpu_format(pass->attachments[index].format);
+			target.writeMask = WGPUColorWriteMask_All;
+			if (i < p_blend_state.attachments.size()) {
+				const PipelineColorBlendState::Attachment &blend = p_blend_state.attachments[i];
+				target.writeMask = (blend.write_r ? WGPUColorWriteMask_Red : 0) | (blend.write_g ? WGPUColorWriteMask_Green : 0) | (blend.write_b ? WGPUColorWriteMask_Blue : 0) | (blend.write_a ? WGPUColorWriteMask_Alpha : 0);
+				if (blend.enable_blend) {
+					blends[i].color = { _to_wgpu_blend_operation(blend.color_blend_op), _to_wgpu_blend_factor(blend.src_color_blend_factor), _to_wgpu_blend_factor(blend.dst_color_blend_factor) };
+					blends[i].alpha = { _to_wgpu_blend_operation(blend.alpha_blend_op), _to_wgpu_blend_factor(blend.src_alpha_blend_factor), _to_wgpu_blend_factor(blend.dst_alpha_blend_factor) };
+					target.blend = &blends[i];
+				}
+			}
+		}
+		targets.push_back(target);
+	}
+	if (shader->modules[SHADER_STAGE_FRAGMENT]) {
+		fragment.module = shader->modules[SHADER_STAGE_FRAGMENT];
+		fragment.entryPoint = _sv("main");
+		fragment.targetCount = targets.size();
+		fragment.targets = targets.ptr();
+		desc.fragment = &fragment;
+	}
+
+	WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &desc);
+	ERR_FAIL_NULL_V(pipeline, PipelineID());
+
+	PipelineInfo *info = memnew(PipelineInfo);
+	info->render = pipeline;
+	info->shader = shader;
+	info->stencil_reference = stencil_reference;
+	return PipelineID(info);
 }
 
 // ----- Compute -----

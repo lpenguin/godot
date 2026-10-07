@@ -103,6 +103,24 @@ public:
 		WGPUComputePipeline compute = nullptr;
 		WGPURenderPipeline render = nullptr;
 		ShaderInfo *shader = nullptr;
+		uint32_t stencil_reference = 0;
+	};
+
+	struct RenderPassInfo {
+		LocalVector<Attachment> attachments;
+		LocalVector<Subpass> subpasses;
+	};
+
+	struct FramebufferInfo {
+		LocalVector<TextureInfo *> attachments;
+		RenderPassInfo *render_pass = nullptr;
+		uint32_t width = 0;
+		uint32_t height = 0;
+	};
+
+	struct VertexFormatInfo {
+		LocalVector<WGPUVertexBufferLayout> layouts;
+		LocalVector<LocalVector<WGPUVertexAttribute>> attributes;
 	};
 
 	struct FenceInfo {
@@ -114,6 +132,8 @@ public:
 	struct CommandBufferInfo {
 		WGPUCommandEncoder encoder = nullptr;
 		WGPUComputePassEncoder compute_pass = nullptr;
+		WGPURenderPassEncoder render_pass = nullptr;
+		LocalVector<WGPUTextureView> temporary_views;
 		WGPUCommandBuffer finished = nullptr;
 	};
 
@@ -134,6 +154,7 @@ private:
 	void _wait_for(WGPUFuture p_future, const volatile bool &p_done);
 	void _end_compute_pass(CommandBufferInfo *p_cmd);
 	void _ensure_compute_pass(CommandBufferInfo *p_cmd);
+	void _end_render_pass(CommandBufferInfo *p_cmd);
 	bool _map_for_read(BufferInfo *p_buffer);
 
 public:
