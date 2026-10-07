@@ -33,6 +33,8 @@
 #include "rendering_device_driver_webgpu.h"
 
 #include "core/config/engine.h"
+#include "core/io/file_access.h"
+#include "core/os/os.h"
 #include "core/string/print_string.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
@@ -1116,6 +1118,15 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 		LocalVector<uint32_t> words;
 		words.resize(shader.code_compressed_bytes.size() / 4);
 		memcpy(words.ptr(), shader.code_compressed_bytes.ptr(), shader.code_compressed_bytes.size());
+
+		// Debug aid: GODOT_WEBGPU_DUMP_SPIRV=<dir> writes the SPIR-V that is handed to WebGPU, e.g. to run it through Tint.
+		const String dump_dir = OS::get_singleton()->get_environment("GODOT_WEBGPU_DUMP_SPIRV");
+		if (!dump_dir.is_empty()) {
+			Ref<FileAccess> dump = FileAccess::open(dump_dir.path_join(info->name.get_file().get_basename() + ".spv"), FileAccess::WRITE);
+			if (dump.is_valid()) {
+				dump->store_buffer(shader.code_compressed_bytes.ptr(), shader.code_compressed_bytes.size());
+			}
+		}
 
 		WGPUShaderSourceSPIRV spirv = {};
 		spirv.chain.sType = WGPUSType_ShaderSourceSPIRV;
