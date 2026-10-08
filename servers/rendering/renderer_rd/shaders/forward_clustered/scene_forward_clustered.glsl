@@ -1137,7 +1137,11 @@ vec4 volumetric_fog_process(vec2 screen_uv, float z) {
 		fog_pos.z = pow(fog_pos.z, implementation_data.volumetric_fog_detail_spread);
 	}
 
+#ifdef WEBGPU
+	return textureLod(sampler3D(volumetric_fog_texture, SAMPLER_LINEAR_CLAMP), fog_pos, 0.0); // No mipmaps; explicit LOD is legal in non-uniform control flow.
+#else
 	return texture(sampler3D(volumetric_fog_texture, SAMPLER_LINEAR_CLAMP), fog_pos);
+#endif
 }
 
 vec4 fog_process(vec3 vertex) {
@@ -2090,9 +2094,17 @@ void fragment_shader(in SceneData scene_data) {
 
 	if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_SSAO)) {
 #ifdef USE_MULTIVIEW
+#ifdef WEBGPU
+		float ssao = textureLod(sampler2DArray(ao_buffer, SAMPLER_LINEAR_CLAMP), vec3(screen_uv, ViewIndex), 0.0).r;
+#else
 		float ssao = texture(sampler2DArray(ao_buffer, SAMPLER_LINEAR_CLAMP), vec3(screen_uv, ViewIndex)).r;
+#endif
+#else
+#ifdef WEBGPU
+		float ssao = textureLod(sampler2D(ao_buffer, SAMPLER_LINEAR_CLAMP), screen_uv, 0.0).r;
 #else
 		float ssao = texture(sampler2D(ao_buffer, SAMPLER_LINEAR_CLAMP), screen_uv).r;
+#endif
 #endif
 		ao = min(ao, ssao);
 		ao_light_affect = mix(ao_light_affect, max(ao_light_affect, implementation_data.ssao_light_affect), implementation_data.ssao_ao_affect);
@@ -2888,6 +2900,7 @@ void fragment_shader(in SceneData scene_data) {
 		}
 	}
 
+#ifndef WEBGPU // Area lights need the LTC lookup tables; the project does not use them and Tint cannot lower their texture parameters.
 	if (sc_cluster_has_area_light()) { // area lights
 
 		uint cluster_area_offset = cluster_offset + implementation_data.cluster_type_size * 2;
@@ -2948,6 +2961,7 @@ void fragment_shader(in SceneData scene_data) {
 			}
 		}
 	}
+#endif // WEBGPU
 #endif // !USE_VERTEX_LIGHTING
 #endif //!defined(MODE_RENDER_DEPTH) && !defined(MODE_UNSHADED)
 
@@ -2974,7 +2988,7 @@ void fragment_shader(in SceneData scene_data) {
 
 #ifdef MODE_RENDER_DEPTH
 
-#ifdef MODE_RENDER_SDF
+#if defined(MODE_RENDER_SDF) && !defined(WEBGPU) // Texture atomics do not exist in WGSL; SDFGI is not available there.
 
 	{
 		vec3 local_pos = (implementation_data.sdf_to_bounds * vec4(vertex, 1.0)).xyz;
@@ -3187,18 +3201,38 @@ void fragment_shader(in SceneData scene_data) {
 void main() {
 #ifdef UBERSHADER
 	bool front_facing = gl_FrontFacing;
+#ifdef WEBGPU
+	// An early discard on gl_FrontFacing makes the rest of the shader non-uniform control flow for WGSL, where
+	// derivatives and implicit-LOD samples are rejected. Discard after the shading instead.
+	bool cull_discard = (uc_cull_mode() == POLYGON_CULL_BACK && !front_facing) || (uc_cull_mode() == POLYGON_CULL_FRONT && front_facing);
+#else
 	if (uc_cull_mode() == POLYGON_CULL_BACK && !front_facing) {
 		discard;
 	} else if (uc_cull_mode() == POLYGON_CULL_FRONT && front_facing) {
 		discard;
 	}
 #endif
+#endif
 #ifdef MODE_DUAL_PARABOLOID
 
+#ifdef WEBGPU
+	bool dp_discard = dp_clip > 0.0;
+#else
 	if (dp_clip > 0.0) {
 		discard;
 	}
 #endif
+#endif
 
 	fragment_shader(scene_data_block.data);
+#if defined(WEBGPU) && defined(UBERSHADER)
+	if (cull_discard) {
+		discard;
+	}
+#endif
+#if defined(WEBGPU) && defined(MODE_DUAL_PARABOLOID)
+	if (dp_discard) {
+		discard;
+	}
+#endif
 }

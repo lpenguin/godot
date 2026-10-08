@@ -333,6 +333,11 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 		file->store_buffer(p_spirv.ptr(), p_spirv.size());
 	}
 	List<String> arguments;
+	// glslang describes a shadow map as a non-depth texture sampled through a depth sampled-image type. Tint converts it
+	// itself, but its IR validator rejects the input first. The validation runs on the SPIR-V we feed it, not on the WGSL
+	// it writes, and the browser validates that WGSL again.
+	arguments.push_back("--disable-ir-validation-asserts");
+	arguments.push_back("true");
 	arguments.push_back("--format");
 	arguments.push_back("wgsl");
 	arguments.push_back("-o");

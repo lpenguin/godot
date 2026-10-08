@@ -408,6 +408,21 @@ layout(set = 1, binding = 8) uniform texture3D voxel_gi_textures[MAX_VOXEL_GI_IN
 
 #endif
 
+#ifdef WEBGPU
+
+// WGSL needs subgroup uniform control flow for subgroup operations, which the cluster loops do not provide. Every
+// invocation walks its own item range instead of the merged one; the per-invocation mask check keeps the result identical.
+#define subgroupBroadcastFirst(x) (x)
+#define subgroupMin(x) (x)
+#define subgroupMax(x) (x)
+#define subgroupOr(x) (x)
+
+// Shadow lookups are issued from per-pixel branches. WGSL only allows implicit-derivative comparison sampling in uniform
+// control flow, while textureSampleCompareLevel has no such rule. All callers pass w = 1.0, so projection is a no-op.
+#define textureProj(s, v) textureLod(s, (v).xyz, 0.0)
+
+#endif
+
 layout(set = 1, binding = 9, std430) buffer restrict readonly ClusterBuffer {
 	uint data[];
 }
@@ -430,7 +445,7 @@ layout(set = 1, binding = 12 + 9) uniform sampler SAMPLER_LINEAR_WITH_MIPMAPS_RE
 layout(set = 1, binding = 12 + 10) uniform sampler SAMPLER_NEAREST_WITH_MIPMAPS_ANISOTROPIC_REPEAT;
 layout(set = 1, binding = 12 + 11) uniform sampler SAMPLER_LINEAR_WITH_MIPMAPS_ANISOTROPIC_REPEAT;
 
-#ifdef MODE_RENDER_SDF
+#if defined(MODE_RENDER_SDF) && !defined(WEBGPU) // Texture atomics do not exist in WGSL; SDFGI is not available there.
 
 layout(r16ui, set = 1, binding = 24) uniform restrict writeonly uimage3D albedo_volume_grid;
 layout(r32ui, set = 1, binding = 25) uniform restrict writeonly uimage3D emission_grid;
