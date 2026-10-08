@@ -86,6 +86,7 @@ public:
 
 	struct SamplerInfo {
 		WGPUSampler sampler = nullptr;
+		WGPUSampler nearest_sampler = nullptr; // Only for filtering samplers.
 		bool comparison = false;
 		bool linear = false;
 	};
@@ -198,6 +199,7 @@ private:
 	void _flush_group0(CommandBufferInfo *p_cmd, bool p_compute);
 	// The view to bind: the texture's own, or one with the dimension the shader layout expects (engines bind default
 	// textures of another kind, a cubemap for a 2D slot for example, which Vulkan tolerates).
+	WGPUSampler _sampler_for_binding(const SamplerInfo *p_sampler, const ShaderInfo *p_shader, uint32_t p_set, uint32_t p_binding, bool p_combined);
 	WGPUTextureView _view_for_binding(const TextureInfo *p_texture, const ShaderInfo *p_shader, uint32_t p_set, uint32_t p_binding, LocalVector<WGPUTextureView> &r_temporary_views);
 	// Builds the constants of a pipeline stage; the keys stay valid as long as p_keys lives.
 	void _build_pipeline_constants(const ShaderInfo *p_shader, ShaderStage p_stage, VectorView<PipelineSpecializationConstant> p_specialization_constants, LocalVector<CharString> &p_keys, LocalVector<WGPUConstantEntry> &r_constants);

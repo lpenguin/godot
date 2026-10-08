@@ -443,6 +443,11 @@ WGPUTextureFormat _sampling_format(WGPUTextureFormat p_format) {
 	}
 }
 
+// WebGPU guarantees 1 and 4 samples only: 2x MSAA becomes 4x, and so do the higher counts.
+uint32_t _wgpu_sample_count(RenderingDeviceCommons::TextureSamples p_samples) {
+	return p_samples == RenderingDeviceCommons::TEXTURE_SAMPLES_1 ? 1u : 4u;
+}
+
 bool _format_has_storage_support(RenderingDeviceCommons::DataFormat p_format) {
 	using RDC = RenderingDeviceCommons;
 	switch (p_format) {
@@ -914,7 +919,7 @@ RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGPU::texture_create(con
 	desc.size.depthOrArrayLayers = p_format.texture_type == TEXTURE_TYPE_3D ? p_format.depth : p_format.array_layers;
 	desc.format = wgpu_format;
 	desc.mipLevelCount = p_format.mipmaps;
-	desc.sampleCount = (uint32_t)1 << (uint32_t)p_format.samples;
+	desc.sampleCount = _wgpu_sample_count(p_format.samples);
 	desc.viewFormatCount = view_formats.size();
 	desc.viewFormats = view_formats.ptr();
 
@@ -1120,6 +1125,15 @@ RenderingDeviceDriver::SamplerID RenderingDeviceDriverWebGPU::sampler_create(con
 
 	SamplerInfo *info = memnew(SamplerInfo);
 	info->sampler = wgpuDeviceCreateSampler(device, &desc);
+	if (!p_state.enable_compare && (desc.magFilter == WGPUFilterMode_Linear || desc.minFilter == WGPUFilterMode_Linear || desc.mipmapFilter == WGPUMipmapFilterMode_Linear)) {
+		// Slots declared non-filtering (depth textures, nearest-named samplers) only accept all-nearest samplers.
+		WGPUSamplerDescriptor nearest_desc = desc;
+		nearest_desc.magFilter = WGPUFilterMode_Nearest;
+		nearest_desc.minFilter = WGPUFilterMode_Nearest;
+		nearest_desc.mipmapFilter = WGPUMipmapFilterMode_Nearest;
+		nearest_desc.maxAnisotropy = 1;
+		info->nearest_sampler = wgpuDeviceCreateSampler(device, &nearest_desc);
+	}
 	info->comparison = p_state.enable_compare;
 	info->linear = desc.magFilter == WGPUFilterMode_Linear || desc.minFilter == WGPUFilterMode_Linear || desc.mipmapFilter == WGPUMipmapFilterMode_Linear;
 	if (!info->sampler) {
@@ -1132,6 +1146,9 @@ RenderingDeviceDriver::SamplerID RenderingDeviceDriverWebGPU::sampler_create(con
 void RenderingDeviceDriverWebGPU::sampler_free(SamplerID p_sampler) {
 	SamplerInfo *info = (SamplerInfo *)p_sampler.id;
 	wgpuSamplerRelease(info->sampler);
+	if (info->nearest_sampler) {
+		wgpuSamplerRelease(info->nearest_sampler);
+	}
 	memdelete(info);
 }
 
@@ -1818,10 +1835,27 @@ void RenderingDeviceDriverWebGPU::shader_destroy_modules(ShaderID p_shader) {
 
 // ----- Uniform sets -----
 
+WGPUSampler RenderingDeviceDriverWebGPU::_sampler_for_binding(const SamplerInfo *p_sampler, const ShaderInfo *p_shader, uint32_t p_set, uint32_t p_binding, bool p_combined) {
+	if (!p_sampler->nearest_sampler) {
+		return p_sampler->sampler;
+	}
+	const RenderingShaderContainerWebGPU::BindingExtra *extra = p_shader->extras_by_binding.getptr(((uint64_t)p_set << 32) | p_binding);
+	if (extra && !extra->comparison && (extra->nearest || (p_combined && extra->depth_like))) {
+		return p_sampler->nearest_sampler;
+	}
+	return p_sampler->sampler;
+}
+
 WGPUTextureView RenderingDeviceDriverWebGPU::_view_for_binding(const TextureInfo *p_texture, const ShaderInfo *p_shader, uint32_t p_set, uint32_t p_binding, LocalVector<WGPUTextureView> &r_temporary_views) {
 	const RenderingShaderContainerWebGPU::BindingExtra *extra = p_shader->extras_by_binding.getptr(((uint64_t)p_set << 32) | p_binding);
 	if (!extra) {
 		return p_texture->view;
+	}
+	// Diagnostics: the layout's sample type follows names, so say when what is bound does not fit it.
+	if (_format_has_depth(p_texture->wgpu_format) && !extra->depth && !extra->depth_like) {
+		WARN_PRINT_ONCE(vformat("WebGPU: depth texture bound to a float slot (shader '%s', set %d, binding %d).", p_shader->name, (int)p_set, (int)p_binding));
+	} else if (!_format_has_depth(p_texture->wgpu_format) && extra->depth) {
+		WARN_PRINT_ONCE(vformat("WebGPU: color texture bound to a depth slot (shader '%s', set %d, binding %d).", p_shader->name, (int)p_set, (int)p_binding));
 	}
 	const WGPUTextureViewDimension expected = _spv_dim_to_view_dimension(extra->dim, extra->arrayed);
 	if (expected == p_texture->view_dimension || p_texture->view_dimension == WGPUTextureViewDimension_3D || expected == WGPUTextureViewDimension_3D) {
@@ -1913,13 +1947,13 @@ RenderingDeviceDriver::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_cre
 				entry.textureView = _view_for_binding(texture, shader, p_set_index, uniform.binding, temporary_views);
 				WGPUBindGroupEntry sampler_entry = {};
 				sampler_entry.binding = uniform.binding + RenderingShaderContainerWebGPU::COMBINED_SAMPLER_BINDING_OFFSET;
-				sampler_entry.sampler = sampler->sampler;
+				sampler_entry.sampler = _sampler_for_binding(sampler, shader, p_set_index, uniform.binding, true);
 				entries.push_back(entry);
 				entry = sampler_entry;
 			} break;
 			case UNIFORM_TYPE_SAMPLER: {
 				const SamplerInfo *sampler = (const SamplerInfo *)uniform.ids[0].id;
-				entry.sampler = sampler->sampler;
+				entry.sampler = _sampler_for_binding(sampler, shader, p_set_index, uniform.binding, false);
 			} break;
 			default:
 				ERR_FAIL_V_MSG(UniformSetID(), vformat("WebGPU driver: uniform type %d is not supported yet.", (int)uniform.type));
@@ -2024,17 +2058,124 @@ void RenderingDeviceDriverWebGPU::command_copy_texture(CommandBufferID p_cmd_buf
 		dst_info.mipLevel = region.dst_subresources.mipmap;
 		dst_info.origin = { (uint32_t)region.dst_offset.x, (uint32_t)region.dst_offset.y, dst->type == TEXTURE_TYPE_3D ? (uint32_t)region.dst_offset.z : region.dst_subresources.base_layer };
 		dst_info.aspect = WGPUTextureAspect_All;
-		WGPUExtent3D extent = { (uint32_t)region.size.x, (uint32_t)region.size.y, src->type == TEXTURE_TYPE_3D ? (uint32_t)region.size.z : MAX(1u, region.src_subresources.layer_count) };
+		uint32_t block_width = 1;
+		uint32_t block_height = 1;
+		get_compressed_image_format_block_dimensions(src->format, block_width, block_height);
+		WGPUExtent3D extent = { (uint32_t)_align_up((uint32_t)region.size.x, block_width), (uint32_t)_align_up((uint32_t)region.size.y, block_height), src->type == TEXTURE_TYPE_3D ? (uint32_t)region.size.z : MAX(1u, region.src_subresources.layer_count) };
 		wgpuCommandEncoderCopyTextureToTexture(cmd->encoder, &src_info, &dst_info, &extent);
 	}
 }
 
 void RenderingDeviceDriverWebGPU::command_resolve_texture(CommandBufferID p_cmd_buffer, TextureID p_src_texture, TextureLayout p_src_texture_layout, uint32_t p_src_layer, uint32_t p_src_mipmap, TextureID p_dst_texture, TextureLayout p_dst_texture_layout, uint32_t p_dst_layer, uint32_t p_dst_mipmap) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	const TextureInfo *src = (const TextureInfo *)p_src_texture.id;
+	const TextureInfo *dst = (const TextureInfo *)p_dst_texture.id;
+	_end_compute_pass(cmd);
+	_end_render_pass(cmd);
+
+	// An empty render pass that loads the multisampled texture and resolves it into the destination.
+	WGPUTextureViewDescriptor src_desc = {};
+	src_desc.format = src->wgpu_format;
+	src_desc.dimension = WGPUTextureViewDimension_2D;
+	src_desc.baseMipLevel = p_src_mipmap;
+	src_desc.mipLevelCount = 1;
+	src_desc.baseArrayLayer = p_src_layer;
+	src_desc.arrayLayerCount = 1;
+	src_desc.aspect = WGPUTextureAspect_All;
+	src_desc.usage = WGPUTextureUsage_None;
+	WGPUTextureViewDescriptor dst_desc = src_desc;
+	dst_desc.format = dst->wgpu_format;
+	dst_desc.baseMipLevel = p_dst_mipmap;
+	dst_desc.baseArrayLayer = p_dst_layer;
+	WGPUTextureView src_view = wgpuTextureCreateView(src->texture, &src_desc);
+	WGPUTextureView dst_view = wgpuTextureCreateView(dst->texture, &dst_desc);
+
+	WGPURenderPassColorAttachment attachment = {};
+	attachment.view = src_view;
+	attachment.resolveTarget = dst_view;
+	attachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+	attachment.loadOp = WGPULoadOp_Load;
+	attachment.storeOp = WGPUStoreOp_Discard;
+	WGPURenderPassDescriptor pass_desc = {};
+	pass_desc.colorAttachmentCount = 1;
+	pass_desc.colorAttachments = &attachment;
+	WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(cmd->encoder, &pass_desc);
+	wgpuRenderPassEncoderEnd(pass);
+	wgpuRenderPassEncoderRelease(pass);
+	wgpuTextureViewRelease(src_view);
+	wgpuTextureViewRelease(dst_view);
 }
 
 void RenderingDeviceDriverWebGPU::command_clear_color_texture(CommandBufferID p_cmd_buffer, TextureID p_texture, TextureLayout p_texture_layout, const Color &p_color, const TextureSubresourceRange &p_subresources) {
-	WGPU_UNIMPLEMENTED_VOID();
+	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	const TextureInfo *texture = (const TextureInfo *)p_texture.id;
+	_end_compute_pass(cmd);
+	_end_render_pass(cmd);
+
+	const uint32_t mip_count = p_subresources.mipmap_count ? p_subresources.mipmap_count : texture->mipmaps - p_subresources.base_mipmap;
+	const uint32_t layer_count = p_subresources.layer_count ? p_subresources.layer_count : texture->layers - p_subresources.base_layer;
+	const bool renderable = (texture->usage_bits & TEXTURE_USAGE_COLOR_ATTACHMENT_BIT) && texture->type != TEXTURE_TYPE_3D;
+
+	for (uint32_t mip = p_subresources.base_mipmap; mip < p_subresources.base_mipmap + mip_count; mip++) {
+		const uint32_t mip_width = MAX(1u, texture->width >> mip);
+		const uint32_t mip_height = MAX(1u, texture->height >> mip);
+		const uint32_t mip_depth = MAX(1u, texture->depth >> mip);
+		for (uint32_t layer = p_subresources.base_layer; layer < p_subresources.base_layer + layer_count; layer++) {
+			if (renderable) {
+				WGPUTextureViewDescriptor view_desc = {};
+				view_desc.format = texture->wgpu_format;
+				view_desc.dimension = WGPUTextureViewDimension_2D;
+				view_desc.baseMipLevel = mip;
+				view_desc.mipLevelCount = 1;
+				view_desc.baseArrayLayer = layer;
+				view_desc.arrayLayerCount = 1;
+				view_desc.aspect = WGPUTextureAspect_All;
+				view_desc.usage = WGPUTextureUsage_None;
+				WGPUTextureView view = wgpuTextureCreateView(texture->texture, &view_desc);
+				WGPURenderPassColorAttachment attachment = {};
+				attachment.view = view;
+				attachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+				attachment.loadOp = WGPULoadOp_Clear;
+				attachment.storeOp = WGPUStoreOp_Store;
+				attachment.clearValue = { p_color.r, p_color.g, p_color.b, p_color.a };
+				WGPURenderPassDescriptor pass_desc = {};
+				pass_desc.colorAttachmentCount = 1;
+				pass_desc.colorAttachments = &attachment;
+				WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(cmd->encoder, &pass_desc);
+				wgpuRenderPassEncoderEnd(pass);
+				wgpuRenderPassEncoderRelease(pass);
+				wgpuTextureViewRelease(view);
+			} else {
+				// Storage-only textures: copy zeros from a fresh (zero-initialized) buffer. Only clearing to zero is supported.
+				uint32_t block_width = 1;
+				uint32_t block_height = 1;
+				get_compressed_image_format_block_dimensions(texture->format, block_width, block_height);
+				const uint32_t block_bytes = (block_width > 1 || block_height > 1) ? get_compressed_image_format_block_byte_size(texture->format) : get_image_format_pixel_size(texture->format);
+				const uint32_t row_pitch = (uint32_t)_align_up((uint64_t)((mip_width + block_width - 1) / block_width) * block_bytes, COPY_BYTES_PER_ROW_ALIGNMENT);
+				const uint32_t rows = (mip_height + block_height - 1) / block_height;
+				const uint64_t size = (uint64_t)row_pitch * rows * (texture->type == TEXTURE_TYPE_3D ? mip_depth : 1u);
+				WGPUBufferDescriptor buffer_desc = {};
+				buffer_desc.size = _align_up(size, 4);
+				buffer_desc.usage = WGPUBufferUsage_CopySrc;
+				WGPUBuffer zeros = wgpuDeviceCreateBuffer(device, &buffer_desc);
+				WGPUTexelCopyBufferInfo buffer_info = {};
+				buffer_info.buffer = zeros;
+				buffer_info.layout.bytesPerRow = row_pitch;
+				buffer_info.layout.rowsPerImage = rows;
+				WGPUTexelCopyTextureInfo texture_info = {};
+				texture_info.texture = texture->texture;
+				texture_info.mipLevel = mip;
+				texture_info.origin = { 0, 0, texture->type == TEXTURE_TYPE_3D ? 0u : layer };
+				texture_info.aspect = WGPUTextureAspect_All;
+				WGPUExtent3D extent = { (uint32_t)_align_up(mip_width, block_width), (uint32_t)_align_up(mip_height, block_height), texture->type == TEXTURE_TYPE_3D ? mip_depth : 1u };
+				wgpuCommandEncoderCopyBufferToTexture(cmd->encoder, &buffer_info, &texture_info, &extent);
+				wgpuBufferRelease(zeros);
+				if (texture->type == TEXTURE_TYPE_3D) {
+					break;
+				}
+			}
+		}
+	}
 }
 
 void RenderingDeviceDriverWebGPU::command_clear_depth_stencil_texture(CommandBufferID p_cmd_buffer, TextureID p_texture, TextureLayout p_texture_layout, float p_depth, uint8_t p_stencil, const TextureSubresourceRange &p_subresources) {
@@ -2070,7 +2211,8 @@ void RenderingDeviceDriverWebGPU::command_copy_buffer_to_texture(CommandBufferID
 		texture_info.mipLevel = region.texture_subresource.mipmap;
 		texture_info.origin = { (uint32_t)region.texture_offset.x, (uint32_t)region.texture_offset.y, dst->type == TEXTURE_TYPE_3D ? (uint32_t)region.texture_offset.z : region.texture_subresource.layer };
 		texture_info.aspect = WGPUTextureAspect_All;
-		WGPUExtent3D extent = { (uint32_t)region.texture_region_size.x, (uint32_t)region.texture_region_size.y, dst->type == TEXTURE_TYPE_3D ? (uint32_t)region.texture_region_size.z : 1u };
+		// The small mip levels of a block-compressed texture are smaller than a block, but copies are made in whole blocks.
+		WGPUExtent3D extent = { (uint32_t)_align_up((uint32_t)region.texture_region_size.x, block_width), (uint32_t)_align_up((uint32_t)region.texture_region_size.y, block_height), dst->type == TEXTURE_TYPE_3D ? (uint32_t)region.texture_region_size.z : 1u };
 		wgpuCommandEncoderCopyBufferToTexture(cmd->encoder, &buffer_info, &texture_info, &extent);
 	}
 }
@@ -2097,7 +2239,7 @@ void RenderingDeviceDriverWebGPU::command_copy_texture_to_buffer(CommandBufferID
 		texture_info.mipLevel = region.texture_subresource.mipmap;
 		texture_info.origin = { (uint32_t)region.texture_offset.x, (uint32_t)region.texture_offset.y, src->type == TEXTURE_TYPE_3D ? (uint32_t)region.texture_offset.z : region.texture_subresource.layer };
 		texture_info.aspect = WGPUTextureAspect_All;
-		WGPUExtent3D extent = { (uint32_t)region.texture_region_size.x, (uint32_t)region.texture_region_size.y, src->type == TEXTURE_TYPE_3D ? (uint32_t)region.texture_region_size.z : 1u };
+		WGPUExtent3D extent = { (uint32_t)_align_up((uint32_t)region.texture_region_size.x, block_width), (uint32_t)_align_up((uint32_t)region.texture_region_size.y, block_height), src->type == TEXTURE_TYPE_3D ? (uint32_t)region.texture_region_size.z : 1u };
 		wgpuCommandEncoderCopyTextureToBuffer(cmd->encoder, &texture_info, &buffer_info, &extent);
 		dst->gpu_written = true;
 	}
@@ -2254,6 +2396,13 @@ void RenderingDeviceDriverWebGPU::command_begin_render_pass(CommandBufferID p_cm
 	desc.colorAttachmentCount = colors.size();
 	desc.colorAttachments = colors.ptr();
 	desc.depthStencilAttachment = has_depth_stencil ? &depth_stencil : nullptr;
+	bool any_color = has_depth_stencil;
+	for (const WGPURenderPassColorAttachment &c : colors) {
+		any_color = any_color || c.view;
+	}
+	if (!any_color) {
+		ERR_PRINT(vformat("WebGPU: render pass without attachments (%d color refs, %d attachments in framebuffer).", (int)colors.size(), (int)framebuffer->attachments.size()));
+	}
 	cmd->render_pass = wgpuCommandEncoderBeginRenderPass(cmd->encoder, &desc);
 	cmd->group0 = nullptr;
 	cmd->group0_dirty = true;
@@ -2471,7 +2620,7 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_c
 		desc.depthStencil = &depth_stencil;
 	}
 
-	desc.multisample.count = (uint32_t)1 << (uint32_t)p_multisample_state.sample_count;
+	desc.multisample.count = _wgpu_sample_count(p_multisample_state.sample_count);
 	desc.multisample.mask = 0xFFFFFFFF;
 	desc.multisample.alphaToCoverageEnabled = p_multisample_state.enable_alpha_to_coverage;
 

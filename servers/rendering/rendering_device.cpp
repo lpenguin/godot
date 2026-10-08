@@ -33,6 +33,7 @@
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
+#include "core/crypto/hashing_context.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/object/class_db.h"
@@ -4176,6 +4177,33 @@ static void _dump_spirv_modules(const Vector<RenderingDevice::ShaderStageSPIRVDa
 Vector<uint8_t> RenderingDevice::shader_compile_binary_from_spirv(const Vector<ShaderStageSPIRVData> &p_spirv, const String &p_shader_name) {
 	_dump_spirv_modules(p_spirv, p_shader_name);
 	const RenderingShaderContainerFormat &container_format = driver->get_shader_container_format();
+
+	// Browsers cannot convert SPIR-V to WGSL (that takes Tint), so the converted shaders are looked up by the hash of
+	// their SPIR-V in files that a native run wrote (user://webgpu_shaders) and that ship with the game
+	// (res://.godot/webgpu_shaders).
+	String webgpu_cache_name;
+	if (driver->get_capabilities().device_family == RDD::DEVICE_WEBGPU) {
+		Ref<HashingContext> hashing = memnew(HashingContext);
+		hashing->start(HashingContext::HASH_SHA256);
+		hashing->update(p_shader_name.to_utf8_buffer());
+		for (const ShaderStageSPIRVData &stage : p_spirv) {
+			PackedByteArray stage_id;
+			stage_id.push_back((uint8_t)stage.shader_stage);
+			hashing->update(stage_id);
+			hashing->update(stage.spirv);
+		}
+		const PackedByteArray digest = hashing->finish();
+		webgpu_cache_name = String::hex_encode_buffer(digest.ptr(), digest.size()) + ".bin";
+		for (const String dir : { "user://webgpu_shaders/", "res://.godot/webgpu_shaders/" }) {
+			if (FileAccess::exists(dir + webgpu_cache_name)) {
+				const Vector<uint8_t> cached = FileAccess::get_file_as_bytes(dir + webgpu_cache_name);
+				if (!cached.is_empty()) {
+					return cached;
+				}
+			}
+		}
+	}
+
 	Ref<RenderingShaderContainer> shader_container = container_format.create_container();
 	ERR_FAIL_COND_V(shader_container.is_null(), Vector<uint8_t>());
 
@@ -4183,7 +4211,17 @@ Vector<uint8_t> RenderingDevice::shader_compile_binary_from_spirv(const Vector<S
 	bool code_compiled = shader_container->set_code_from_spirv(p_shader_name, p_spirv);
 	ERR_FAIL_COND_V_MSG(!code_compiled, Vector<uint8_t>(), vformat("Failed to compile code to native for SPIR-V."));
 
-	return shader_container->to_bytes();
+	Vector<uint8_t> bytes = shader_container->to_bytes();
+#ifndef WEB_ENABLED
+	if (!webgpu_cache_name.is_empty() && !bytes.is_empty()) {
+		DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path("user://webgpu_shaders"));
+		Ref<FileAccess> cache_file = FileAccess::open("user://webgpu_shaders/" + webgpu_cache_name, FileAccess::WRITE);
+		if (cache_file.is_valid()) {
+			cache_file->store_buffer(bytes);
+		}
+	}
+#endif
+	return bytes;
 }
 
 RID RenderingDevice::shader_create_from_bytecode(const Vector<uint8_t> &p_shader_binary, RID p_placeholder) {

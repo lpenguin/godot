@@ -37,7 +37,7 @@
 #include "core/templates/hash_set.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
-const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 3;
+const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 5;
 
 namespace {
 
@@ -580,6 +580,8 @@ bool RenderingShaderContainerWebGPU::_set_code_from_spirv(const ReflectShader &p
 
 void RenderingShaderContainerWebGPU::_set_from_shader_reflection_post(const ReflectShader &p_shader) {
 	binding_extras.clear();
+	int shadow_sampler_index = -1;
+	bool has_shadow_atlas = false;
 	for (const ReflectDescriptorSet &uniform_set : p_shader.uniform_sets) {
 		for (const ReflectUniform &uniform : uniform_set) {
 			BindingExtra extra;
@@ -592,20 +594,25 @@ void RenderingShaderContainerWebGPU::_set_from_shader_reflection_post(const Refl
 			extra.readable = (spv.decoration_flags & SPV_REFLECT_DECORATION_NON_READABLE) ? 0 : 1;
 			extra.writable = (spv.decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE) ? 0 : 1;
 			const String lower_name = String::utf8(spv.name).to_lower();
-			extra.depth_like = lower_name.contains("depth") || lower_name.contains("shadow");
+			extra.depth_like = lower_name.contains("depth") || lower_name == "shadow_atlas" || lower_name == "directional_shadow_atlas" || lower_name == "source_cube";
 			extra.nearest = lower_name.contains("nearest") && !lower_name.contains("mipmaps"); // Nearest with mipmaps filters between mip levels.
 			// All variants of a shader have to give the same bind group layout, but Tint only knows that a texture is a depth
 			// texture when this variant samples it with a comparison. Shadow maps and comparison samplers follow their names
 			// (the 2D light shadows of the canvas are plain float textures, hence the `_texture` exception).
-			const bool shadow_named = lower_name.contains("shadow") && !lower_name.contains("_texture");
-			if (shadow_named && (uniform.type == RDC::UNIFORM_TYPE_TEXTURE || uniform.type == RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE)) {
+			const bool shadow_atlas = lower_name == "shadow_atlas" || lower_name == "directional_shadow_atlas";
+			has_shadow_atlas = has_shadow_atlas || shadow_atlas;
+			if (shadow_atlas && (uniform.type == RDC::UNIFORM_TYPE_TEXTURE || uniform.type == RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE)) {
 				extra.depth = 1;
 			}
-			if (shadow_named && (uniform.type == RDC::UNIFORM_TYPE_SAMPLER)) {
-				extra.comparison = 1;
+			if (lower_name == "shadow_sampler" && uniform.type == RDC::UNIFORM_TYPE_SAMPLER) {
+				shadow_sampler_index = binding_extras.size();
 			}
 			binding_extras.push_back(extra);
 		}
+	}
+	// The scene and fog shaders compare against their shadow atlases; the canvas `shadow_sampler` samples a float texture.
+	if (shadow_sampler_index >= 0 && has_shadow_atlas) {
+		binding_extras.write[shadow_sampler_index].comparison = 1;
 	}
 }
 

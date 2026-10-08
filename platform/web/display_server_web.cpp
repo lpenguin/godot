@@ -42,6 +42,12 @@
 #include "servers/display/native_menu.h"
 #include "servers/rendering/dummy/rasterizer_dummy.h"
 
+#ifdef WEBGPU_ENABLED
+#include "drivers/webgpu/rendering_context_driver_webgpu.h"
+#include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
+#include "servers/rendering/rendering_device.h"
+#endif
+
 #ifdef PROXY_TO_PTHREAD_ENABLED
 #include "core/object/callable_mp.h"
 #endif
@@ -71,6 +77,11 @@ bool DisplayServerWeb::check_size_force_redraw() {
 		Variant size = Rect2i(Point2i(), window_size); // TODO use window_get_position if implemented.
 		rect_changed_callback.call(size);
 		emscripten_set_canvas_element_size(canvas_id, window_size.x, window_size.y);
+#ifdef WEBGPU_ENABLED
+		if (rendering_context) {
+			rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, window_size.x, window_size.y);
+		}
+#endif
 	}
 	return size_changed;
 }
@@ -1003,6 +1014,9 @@ void DisplayServerWeb::process_joypads() {
 
 Vector<String> DisplayServerWeb::get_rendering_drivers_func() {
 	Vector<String> drivers;
+#ifdef WEBGPU_ENABLED
+	drivers.push_back("webgpu");
+#endif
 #ifdef GLES3_ENABLED
 	drivers.push_back("opengl3");
 #endif
@@ -1131,9 +1145,46 @@ DisplayServerWeb::DisplayServerWeb(const String &p_rendering_driver, DisplayServ
 	// Expose method for requesting quit.
 	godot_js_os_request_quit_cb(request_quit_callback);
 
+#ifdef WEBGPU_ENABLED
+	bool webgpu_inited = false;
+	if (p_rendering_driver == "webgpu") {
+		rendering_context = memnew(RenderingContextDriverWebGPU);
+		if (rendering_context->initialize() == OK) {
+			RenderingContextDriverWebGPU::WindowPlatformData platform_data;
+			platform_data.canvas_selector = canvas_id; // Selector of the canvas, "#canvas".
+			if (rendering_context->window_create(DisplayServerEnums::MAIN_WINDOW_ID, &platform_data) == OK) {
+				rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, p_resolution.x, p_resolution.y);
+				rendering_context->window_set_vsync_mode(DisplayServerEnums::MAIN_WINDOW_ID, p_vsync_mode);
+				rendering_device = memnew(RenderingDevice);
+				if (rendering_device->initialize(rendering_context, DisplayServerEnums::MAIN_WINDOW_ID) == OK) {
+					rendering_device->screen_create(DisplayServerEnums::MAIN_WINDOW_ID);
+					RendererCompositorRD::make_current();
+					webgpu_inited = true;
+				} else {
+					memdelete(rendering_device);
+					rendering_device = nullptr;
+				}
+			}
+		}
+		if (!webgpu_inited) {
+			if (rendering_context) {
+				memdelete(rendering_context);
+				rendering_context = nullptr;
+			}
+			OS::get_singleton()->alert(
+					"Your browser seems not to support WebGPU.\n\n"
+					"If possible, consider updating your browser version and video card drivers.",
+					"Unable to initialize WebGPU video driver");
+			RasterizerDummy::make_current();
+		}
+	}
+#endif
+
 #ifdef GLES3_ENABLED
 	bool webgl2_inited = false;
-	if (godot_js_display_has_webgl(2)) {
+	if (p_rendering_driver == "webgpu") {
+		// Already handled above.
+	} else if (godot_js_display_has_webgl(2)) {
 		EmscriptenWebGLContextAttributes attributes;
 		emscripten_webgl_init_context_attributes(&attributes);
 		attributes.alpha = OS::get_singleton()->is_layered_allowed();
@@ -1144,7 +1195,9 @@ DisplayServerWeb::DisplayServerWeb(const String &p_rendering_driver, DisplayServ
 		webgl_ctx = emscripten_webgl_create_context(canvas_id, &attributes);
 		webgl2_inited = webgl_ctx && emscripten_webgl_make_context_current(webgl_ctx) == EMSCRIPTEN_RESULT_SUCCESS;
 	}
-	if (webgl2_inited) {
+	if (p_rendering_driver == "webgpu") {
+		// Nothing to do: the rasterizer was made current above.
+	} else if (webgl2_inited) {
 		if (!emscripten_webgl_enable_extension(webgl_ctx, "OVR_multiview2")) {
 			print_verbose("Failed to enable WebXR extension.");
 		}
@@ -1158,7 +1211,9 @@ DisplayServerWeb::DisplayServerWeb(const String &p_rendering_driver, DisplayServ
 		RasterizerDummy::make_current();
 	}
 #else
-	RasterizerDummy::make_current();
+	if (p_rendering_driver != "webgpu") {
+		RasterizerDummy::make_current();
+	}
 #endif
 
 	// JS Input interface (js/libs/library_godot_input.js)
@@ -1194,6 +1249,18 @@ DisplayServerWeb::~DisplayServerWeb() {
 	if (webgl_ctx) {
 		emscripten_webgl_commit_frame();
 		emscripten_webgl_destroy_context(webgl_ctx);
+	}
+#endif
+#ifdef WEBGPU_ENABLED
+	if (rendering_device) {
+		rendering_device->screen_free(DisplayServerEnums::MAIN_WINDOW_ID);
+		memdelete(rendering_device);
+		rendering_device = nullptr;
+	}
+	if (rendering_context) {
+		rendering_context->window_destroy(DisplayServerEnums::MAIN_WINDOW_ID);
+		memdelete(rendering_context);
+		rendering_context = nullptr;
 	}
 #endif
 }
