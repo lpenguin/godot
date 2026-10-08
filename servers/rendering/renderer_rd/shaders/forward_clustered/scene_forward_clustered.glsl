@@ -1109,7 +1109,11 @@ layout(location = 0) out vec4 frag_color;
 #endif // RENDER DEPTH
 
 #ifdef MOTION_VECTORS
+#ifdef WEBGPU
+layout(location = 2) out vec4 motion_vector; // The velocity texture is RGBA16F in WebGPU; a render target needs all its channels written.
+#else
 layout(location = 2) out vec2 motion_vector;
+#endif
 #endif
 
 #include "../scene_forward_aa_inc.glsl"
@@ -3194,7 +3198,11 @@ void fragment_shader(in SceneData scene_data) {
 	vec2 position_uv = position_clip * vec2(0.5, 0.5);
 	vec2 prev_position_uv = prev_position_clip * vec2(0.5, 0.5);
 
+#ifdef WEBGPU
+	motion_vector = vec4(prev_position_uv - position_uv, 0.0, 0.0);
+#else
 	motion_vector = prev_position_uv - position_uv;
+#endif
 #endif
 }
 

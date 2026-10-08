@@ -37,7 +37,7 @@
 #include "core/templates/hash_set.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
-const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 7;
+const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 8;
 
 namespace {
 
@@ -536,6 +536,14 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 	}
 	r_wgsl = FileAccess::get_file_as_string(output);
 	// No browser supports `var<immediate>` yet: push constants become a uniform buffer in group 0 (see the driver).
+	// Narrow 8-bit storage textures are allocated as RGBA8 (see the driver); textureStore always takes a vec4.
+	for (const char *dimension : { "2d", "2d_array", "3d" }) {
+		for (const char *access : { "write", "read", "read_write" }) {
+			for (const char *narrow : { "r8unorm", "rg8unorm" }) {
+				r_wgsl = r_wgsl.replace(vformat("texture_storage_%s<%s, %s>", dimension, narrow, access), vformat("texture_storage_%s<rgba8unorm, %s>", dimension, access));
+			}
+		}
+	}
 	r_wgsl = r_wgsl.replace("var<immediate> ", vformat("@group(0) @binding(%d) var<uniform> ", RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING));
 	return !r_wgsl.is_empty();
 }

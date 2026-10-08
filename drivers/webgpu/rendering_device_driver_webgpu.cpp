@@ -282,11 +282,11 @@ WGPUTextureFormat _spv_image_format_to_wgpu(uint32_t p_spv_format) {
 		case SpvImageFormatRg16:
 			return WGPUTextureFormat_RG16Unorm;
 		case SpvImageFormatRg8:
-			return WGPUTextureFormat_RG8Unorm;
+			return WGPUTextureFormat_RGBA8Unorm; // See _storage_format().
 		case SpvImageFormatR16:
 			return WGPUTextureFormat_R16Unorm;
 		case SpvImageFormatR8:
-			return WGPUTextureFormat_R8Unorm;
+			return WGPUTextureFormat_RGBA8Unorm; // See _storage_format().
 		case SpvImageFormatRgba16Snorm:
 			return WGPUTextureFormat_RGBA16Snorm;
 		case SpvImageFormatRg16Snorm:
@@ -448,9 +448,23 @@ uint32_t _wgpu_sample_count(RenderingDeviceCommons::TextureSamples p_samples) {
 	return p_samples == RenderingDeviceCommons::TEXTURE_SAMPLES_1 ? 1u : 4u;
 }
 
+// WebGPU can only write the 8-bit formats with four channels. Narrower storage textures are allocated as RGBA8, which reads
+// and writes the same in the channels they have (the shaders' format qualifiers are rewritten to match).
+WGPUTextureFormat _storage_format(WGPUTextureFormat p_format) {
+	switch (p_format) {
+		case WGPUTextureFormat_R8Unorm:
+		case WGPUTextureFormat_RG8Unorm:
+			return WGPUTextureFormat_RGBA8Unorm;
+		default:
+			return p_format;
+	}
+}
+
 bool _format_has_storage_support(RenderingDeviceCommons::DataFormat p_format) {
 	using RDC = RenderingDeviceCommons;
 	switch (p_format) {
+		case RDC::DATA_FORMAT_R8_UNORM: // Stored as RGBA8, see _storage_format().
+		case RDC::DATA_FORMAT_R8G8_UNORM:
 		case RDC::DATA_FORMAT_R8G8B8A8_UNORM:
 		case RDC::DATA_FORMAT_R8G8B8A8_SNORM:
 		case RDC::DATA_FORMAT_R8G8B8A8_UINT:
@@ -892,6 +906,9 @@ RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGPU::texture_create(con
 	ERR_FAIL_COND_V_MSG(wgpu_format == WGPUTextureFormat_Undefined, TextureID(), vformat("WebGPU driver: unsupported texture format %d.", (int)p_format.format));
 	ERR_FAIL_COND_V_MSG(p_format.texture_type == TEXTURE_TYPE_1D_ARRAY, TextureID(), "WebGPU driver: 1D texture arrays are not supported.");
 
+	if ((p_format.usage_bits & TEXTURE_USAGE_STORAGE_BIT) && !(p_format.usage_bits & (TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | TEXTURE_USAGE_CAN_UPDATE_BIT))) {
+		wgpu_format = _storage_format(wgpu_format);
+	}
 	WGPUTextureUsage usage = WGPUTextureUsage_CopySrc | WGPUTextureUsage_CopyDst;
 	if (p_format.usage_bits & TEXTURE_USAGE_SAMPLING_BIT) {
 		usage |= WGPUTextureUsage_TextureBinding;
@@ -944,7 +961,7 @@ RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGPU::texture_create(con
 	total_memory_used += info->allocation_size;
 
 	WGPUTextureViewDescriptor view_desc = {};
-	view_desc.format = p_view.format != DATA_FORMAT_MAX && _to_wgpu_format(p_view.format) != WGPUTextureFormat_Undefined ? _to_wgpu_format(p_view.format) : wgpu_format;
+	view_desc.format = p_view.format != DATA_FORMAT_MAX && _to_wgpu_format(p_view.format) != WGPUTextureFormat_Undefined && wgpu_format == _to_wgpu_format(p_format.format) ? _to_wgpu_format(p_view.format) : wgpu_format;
 	view_desc.dimension = _texture_type_to_view_dimension(p_format.texture_type);
 	view_desc.baseMipLevel = 0;
 	view_desc.mipLevelCount = p_format.mipmaps;
@@ -973,7 +990,7 @@ RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGPU::texture_create_sha
 	wgpuTextureAddRef(info->texture);
 
 	WGPUTextureFormat view_format = _to_wgpu_format(p_view.format);
-	if (view_format == WGPUTextureFormat_Undefined) {
+	if (view_format == WGPUTextureFormat_Undefined || original->wgpu_format != _to_wgpu_format(original->format)) {
 		view_format = original->wgpu_format;
 	}
 	WGPUTextureViewDescriptor view_desc = {};
@@ -1002,8 +1019,8 @@ RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGPU::texture_create_sha
 	wgpuTextureAddRef(info->texture);
 
 	WGPUTextureFormat view_format = _to_wgpu_format(p_view.format);
-	if (view_format == WGPUTextureFormat_Undefined) {
-		view_format = original->wgpu_format;
+	if (view_format == WGPUTextureFormat_Undefined || original->wgpu_format != _to_wgpu_format(original->format)) {
+		view_format = original->wgpu_format; // Also for storage textures that were widened.
 	}
 
 	WGPUTextureViewDescriptor view_desc = {};
@@ -1726,6 +1743,9 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 						entry.texture.sampleType = extra.depth ? WGPUTextureSampleType_Depth : (extra.numeric == 1 ? WGPUTextureSampleType_Sint : (extra.numeric == 2 ? WGPUTextureSampleType_Uint : (extra.depth_like ? WGPUTextureSampleType_UnfilterableFloat : WGPUTextureSampleType_Float)));
 						entry.texture.viewDimension = _spv_dim_to_view_dimension(extra.dim, extra.arrayed);
 						entry.texture.multisampled = extra.multisampled;
+						if (extra.multisampled && entry.texture.sampleType == WGPUTextureSampleType_Float) {
+							entry.texture.sampleType = WGPUTextureSampleType_UnfilterableFloat; // Multisampled textures cannot be filtered.
+						}
 						if (uniform.type == UNIFORM_TYPE_SAMPLER_WITH_TEXTURE) {
 							// The sampler half of the combined binding gets its own entry (see COMBINED_SAMPLER_BINDING_OFFSET).
 							WGPUBindGroupLayoutEntry texture_entry = entry;
