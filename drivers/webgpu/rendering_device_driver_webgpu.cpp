@@ -448,14 +448,41 @@ uint32_t _wgpu_sample_count(RenderingDeviceCommons::TextureSamples p_samples) {
 	return p_samples == RenderingDeviceCommons::TEXTURE_SAMPLES_1 ? 1u : 4u;
 }
 
-// WebGPU can only write the 8-bit formats with four channels. Narrower storage textures are allocated as RGBA8, which reads
-// and writes the same in the channels they have (the shaders' format qualifiers are rewritten to match).
+// Browsers only guarantee storage textures in a handful of formats: rgba8 (unorm, snorm, uint, sint), rgba16 (uint, sint,
+// float), and the 32-bit formats. Every other format a shader asks for is stored in the closest of those: it reads and
+// writes the same in the channels it has, the shaders' format qualifiers are rewritten to match (see the shader container),
+// and the 16-bit normalized formats become half floats.
 WGPUTextureFormat _storage_format(WGPUTextureFormat p_format) {
 	switch (p_format) {
 		case WGPUTextureFormat_R8Unorm:
 		case WGPUTextureFormat_RG8Unorm:
 			return WGPUTextureFormat_RGBA8Unorm;
-		case WGPUTextureFormat_R16Snorm: // 16-bit normalized formats need an optional feature that browsers do not have.
+		case WGPUTextureFormat_R8Snorm:
+		case WGPUTextureFormat_RG8Snorm:
+			return WGPUTextureFormat_RGBA8Snorm;
+		case WGPUTextureFormat_R8Uint:
+		case WGPUTextureFormat_RG8Uint:
+			return WGPUTextureFormat_RGBA8Uint;
+		case WGPUTextureFormat_R8Sint:
+		case WGPUTextureFormat_RG8Sint:
+			return WGPUTextureFormat_RGBA8Sint;
+		case WGPUTextureFormat_R16Uint:
+		case WGPUTextureFormat_RG16Uint:
+		case WGPUTextureFormat_RGB10A2Uint:
+			return WGPUTextureFormat_RGBA16Uint;
+		case WGPUTextureFormat_R16Sint:
+		case WGPUTextureFormat_RG16Sint:
+			return WGPUTextureFormat_RGBA16Sint;
+		case WGPUTextureFormat_R16Float:
+		case WGPUTextureFormat_RG16Float:
+		case WGPUTextureFormat_R16Unorm:
+		case WGPUTextureFormat_RG16Unorm:
+		case WGPUTextureFormat_RGBA16Unorm:
+		case WGPUTextureFormat_R16Snorm:
+		case WGPUTextureFormat_RG16Snorm:
+		case WGPUTextureFormat_RGBA16Snorm:
+		case WGPUTextureFormat_RG11B10Ufloat:
+		case WGPUTextureFormat_RGB10A2Unorm:
 			return WGPUTextureFormat_RGBA16Float;
 		default:
 			return p_format;
@@ -465,9 +492,30 @@ WGPUTextureFormat _storage_format(WGPUTextureFormat p_format) {
 bool _format_has_storage_support(RenderingDeviceCommons::DataFormat p_format) {
 	using RDC = RenderingDeviceCommons;
 	switch (p_format) {
-		case RDC::DATA_FORMAT_R16_SNORM: // Stored as RGBA16F, see _storage_format().
-		case RDC::DATA_FORMAT_R8_UNORM: // Stored as RGBA8, see _storage_format().
+		// These are stored in a wider format, see _storage_format().
+		case RDC::DATA_FORMAT_R8_UNORM:
 		case RDC::DATA_FORMAT_R8G8_UNORM:
+		case RDC::DATA_FORMAT_R8_SNORM:
+		case RDC::DATA_FORMAT_R8G8_SNORM:
+		case RDC::DATA_FORMAT_R8_UINT:
+		case RDC::DATA_FORMAT_R8G8_UINT:
+		case RDC::DATA_FORMAT_R8_SINT:
+		case RDC::DATA_FORMAT_R8G8_SINT:
+		case RDC::DATA_FORMAT_R16_UINT:
+		case RDC::DATA_FORMAT_R16G16_UINT:
+		case RDC::DATA_FORMAT_R16_SINT:
+		case RDC::DATA_FORMAT_R16G16_SINT:
+		case RDC::DATA_FORMAT_R16_SFLOAT:
+		case RDC::DATA_FORMAT_R16G16_SFLOAT:
+		case RDC::DATA_FORMAT_R16_UNORM:
+		case RDC::DATA_FORMAT_R16G16_UNORM:
+		case RDC::DATA_FORMAT_R16G16B16A16_UNORM:
+		case RDC::DATA_FORMAT_R16_SNORM:
+		case RDC::DATA_FORMAT_R16G16_SNORM:
+		case RDC::DATA_FORMAT_R16G16B16A16_SNORM:
+		case RDC::DATA_FORMAT_B10G11R11_UFLOAT_PACK32:
+		case RDC::DATA_FORMAT_A2B10G10R10_UNORM_PACK32:
+		case RDC::DATA_FORMAT_A2B10G10R10_UINT_PACK32:
 		case RDC::DATA_FORMAT_R8G8B8A8_UNORM:
 		case RDC::DATA_FORMAT_R8G8B8A8_SNORM:
 		case RDC::DATA_FORMAT_R8G8B8A8_UINT:
@@ -730,13 +778,21 @@ Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t 
 		(WGPUFeatureName)WGPUNativeFeature_ClearTexture,
 #endif
 	};
+#ifndef __EMSCRIPTEN__
+	const bool emulate_browser = OS::get_singleton()->get_environment("GODOT_WEBGPU_BROWSER_LIMITS") == "1";
+#else
+	const bool emulate_browser = false;
+#endif
 	for (WGPUFeatureName feature : optional_features) {
+		if (emulate_browser && (uint32_t)feature >= 0x00030000u) {
+			continue; // Native-only extensions (wgpu-native feature ids): browsers do not have them.
+		}
 		if (wgpuAdapterHasFeature(adapter, feature)) {
 			features.push_back(feature);
 		}
 	}
 #ifndef __EMSCRIPTEN__
-	immediates_supported = wgpuAdapterHasFeature(adapter, (WGPUFeatureName)WGPUNativeFeature_Immediates);
+	immediates_supported = !emulate_browser && wgpuAdapterHasFeature(adapter, (WGPUFeatureName)WGPUNativeFeature_Immediates);
 #else
 	immediates_supported = false;
 #endif
@@ -921,7 +977,7 @@ RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGPU::texture_create(con
 	ERR_FAIL_COND_V_MSG(wgpu_format == WGPUTextureFormat_Undefined, TextureID(), vformat("WebGPU driver: unsupported texture format %d.", (int)p_format.format));
 	ERR_FAIL_COND_V_MSG(p_format.texture_type == TEXTURE_TYPE_1D_ARRAY, TextureID(), "WebGPU driver: 1D texture arrays are not supported.");
 
-	if ((p_format.usage_bits & TEXTURE_USAGE_STORAGE_BIT) && !(p_format.usage_bits & (TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | TEXTURE_USAGE_CAN_UPDATE_BIT))) {
+	if ((p_format.usage_bits & TEXTURE_USAGE_STORAGE_BIT) && !(p_format.usage_bits & TEXTURE_USAGE_COLOR_ATTACHMENT_BIT)) {
 		wgpu_format = _storage_format(wgpu_format);
 	}
 	WGPUTextureUsage usage = WGPUTextureUsage_CopySrc | WGPUTextureUsage_CopyDst;
@@ -931,7 +987,8 @@ RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGPU::texture_create(con
 	if (p_format.usage_bits & (TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
 		usage |= WGPUTextureUsage_RenderAttachment;
 	}
-	if (p_format.usage_bits & TEXTURE_USAGE_STORAGE_BIT) {
+	// A texture that is also a render target keeps its own format, which may not be a storage format (the default VRS texture).
+	if ((p_format.usage_bits & TEXTURE_USAGE_STORAGE_BIT) && _storage_format(wgpu_format) == wgpu_format) {
 		usage |= WGPUTextureUsage_StorageBinding;
 	}
 
@@ -1739,7 +1796,7 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 						entry.buffer.hasDynamicOffset = uniform.type == UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC;
 						break;
 					case UNIFORM_TYPE_IMAGE: {
-						entry.storageTexture.format = _spv_image_format_to_wgpu(extra.image_format);
+						entry.storageTexture.format = _storage_format(_spv_image_format_to_wgpu(extra.image_format));
 						entry.storageTexture.viewDimension = _spv_dim_to_view_dimension(extra.dim, extra.arrayed);
 						if (extra.readable && extra.writable) {
 							entry.storageTexture.access = WGPUStorageTextureAccess_ReadWrite;

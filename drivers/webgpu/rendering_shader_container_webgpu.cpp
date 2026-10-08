@@ -37,7 +37,7 @@
 #include "core/templates/hash_set.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
-const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 9;
+const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 11;
 
 namespace {
 
@@ -536,17 +536,25 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 	}
 	r_wgsl = FileAccess::get_file_as_string(output);
 	// No browser supports `var<immediate>` yet: push constants become a uniform buffer in group 0 (see the driver).
-	// Narrow 8-bit storage textures are allocated as RGBA8 (see the driver); textureStore always takes a vec4.
+	// Storage texture formats that browsers lack are allocated in a wider one by the driver (see _storage_format there);
+	// textureStore and textureLoad always use four-component vectors, so only the format in the declaration changes.
+	static const char *const STORAGE_FORMAT_MAP[][2] = {
+		{ "r8unorm", "rgba8unorm" }, { "rg8unorm", "rgba8unorm" },
+		{ "r8snorm", "rgba8snorm" }, { "rg8snorm", "rgba8snorm" },
+		{ "r8uint", "rgba8uint" }, { "rg8uint", "rgba8uint" },
+		{ "r8sint", "rgba8sint" }, { "rg8sint", "rgba8sint" },
+		{ "r16uint", "rgba16uint" }, { "rg16uint", "rgba16uint" }, { "rgb10a2uint", "rgba16uint" },
+		{ "r16sint", "rgba16sint" }, { "rg16sint", "rgba16sint" },
+		{ "r16float", "rgba16float" }, { "rg16float", "rgba16float" },
+		{ "r16unorm", "rgba16float" }, { "rg16unorm", "rgba16float" }, { "rgba16unorm", "rgba16float" },
+		{ "r16snorm", "rgba16float" }, { "rg16snorm", "rgba16float" }, { "rgba16snorm", "rgba16float" },
+		{ "rg11b10ufloat", "rgba16float" }, { "rgb10a2unorm", "rgba16float" },
+	};
 	for (const char *dimension : { "2d", "2d_array", "3d" }) {
 		for (const char *access : { "write", "read", "read_write" }) {
-			for (const char *narrow : { "r8unorm", "rg8unorm" }) {
-				r_wgsl = r_wgsl.replace(vformat("texture_storage_%s<%s, %s>", dimension, narrow, access), vformat("texture_storage_%s<rgba8unorm, %s>", dimension, access));
+			for (const char *const *mapping : STORAGE_FORMAT_MAP) {
+				r_wgsl = r_wgsl.replace(vformat("texture_storage_%s<%s, %s>", dimension, mapping[0], access), vformat("texture_storage_%s<%s, %s>", dimension, mapping[1], access));
 			}
-		}
-	}
-	for (const char *dimension : { "2d", "2d_array", "3d" }) {
-		for (const char *access : { "write", "read", "read_write" }) {
-			r_wgsl = r_wgsl.replace(vformat("texture_storage_%s<r16snorm, %s>", dimension, access), vformat("texture_storage_%s<rgba16float, %s>", dimension, access));
 		}
 	}
 	r_wgsl = r_wgsl.replace("var<immediate> ", vformat("@group(0) @binding(%d) var<uniform> ", RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING));
@@ -638,6 +646,12 @@ void _annotate_from_wgsl(String &r_wgsl, const Vector<Vector3i> &p_uniform_keys,
 				extra.multisampled = type.contains("multisampled");
 			} else if (type.begins_with("texture_multisampled")) {
 				extra.multisampled = 1;
+			}
+			if (type.begins_with("texture_storage")) {
+				// What the shader really does with the image (browsers only allow read-write access on r32 formats, and SPIR-V
+				// often leaves the `writeonly` qualifier out of images that are only written).
+				extra.readable = !type.ends_with(", write>");
+				extra.writable = !type.ends_with(", read>");
 			}
 			if (type.ends_with("<u32>")) {
 				extra.numeric = 2;
