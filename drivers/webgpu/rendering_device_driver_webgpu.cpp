@@ -409,6 +409,16 @@ WGPUAddressMode _to_wgpu_address_mode(RenderingDeviceCommons::SamplerRepeatMode 
 	}
 }
 
+// The bind group layout entry of the push constant ring (see RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING).
+WGPUBindGroupLayoutEntry _push_constant_layout_entry() {
+	WGPUBindGroupLayoutEntry entry = {};
+	entry.binding = RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING;
+	entry.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment | WGPUShaderStage_Compute;
+	entry.buffer.type = WGPUBufferBindingType_Uniform;
+	entry.buffer.hasDynamicOffset = true;
+	return entry;
+}
+
 bool _format_has_storage_support(RenderingDeviceCommons::DataFormat p_format) {
 	using RDC = RenderingDeviceCommons;
 	switch (p_format) {
@@ -692,6 +702,15 @@ Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t 
 	device = request.device;
 	queue = wgpuDeviceGetQueue(device);
 	wgpuDeviceGetLimits(device, &limits);
+
+	{
+		WGPUBufferDescriptor ring_desc = {};
+		ring_desc.label = _sv("Push constant ring");
+		ring_desc.size = (uint64_t)PUSH_CONSTANT_SLOTS * RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE;
+		ring_desc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+		push_constant_ring = wgpuDeviceCreateBuffer(device, &ring_desc);
+		ERR_FAIL_NULL_V(push_constant_ring, ERR_CANT_CREATE);
+	}
 
 	capabilities.device_family = DEVICE_WEBGPU;
 	capabilities.version_major = 1;
@@ -1177,6 +1196,8 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 		for (WGPUCommandBuffer command_buffer : submit) {
 			wgpuCommandBufferRelease(command_buffer);
 		}
+		// Everything recorded so far is on the queue: later writes to the push constant ring are ordered after it.
+		push_constant_next_slot = 0;
 	}
 	for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
 		SwapChainInfo *swap_chain = (SwapChainInfo *)p_swap_chains[i].id;
@@ -1267,6 +1288,23 @@ void RenderingDeviceDriverWebGPU::_release_swap_chain_image(SwapChainInfo *p_swa
 		memdelete(p_swap_chain->current_texture);
 		p_swap_chain->current_texture = nullptr;
 	}
+}
+
+// Binds group 0 of a shader with emulated push constants: the uniform set RD chose (or the shader's own default group)
+// plus the dynamic offset of the push constant slot. Called before every draw and dispatch.
+void RenderingDeviceDriverWebGPU::_flush_group0(CommandBufferInfo *p_cmd, bool p_compute) {
+	if (!p_cmd->group0_dirty || !p_cmd->shader || !p_cmd->shader->emulate_push_constants) {
+		return;
+	}
+	WGPUBindGroup group = p_cmd->group0 ? p_cmd->group0 : p_cmd->shader->default_group0;
+	ERR_FAIL_NULL(group);
+	const uint32_t offset = p_cmd->push_offset;
+	if (p_compute) {
+		wgpuComputePassEncoderSetBindGroup(p_cmd->compute_pass, 0, group, 1, &offset);
+	} else {
+		wgpuRenderPassEncoderSetBindGroup(p_cmd->render_pass, 0, group, 1, &offset);
+	}
+	p_cmd->group0_dirty = false;
 }
 
 void RenderingDeviceDriverWebGPU::_end_render_pass(CommandBufferInfo *p_cmd) {
@@ -1493,6 +1531,7 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 	for (int i = 0; i < container->shaders.size(); i++) {
 		const RenderingShaderContainer::Shader &shader = container->shaders[i];
 		const bool is_wgsl = shader.code_compression_flags == RenderingShaderContainerWebGPU::COMPRESSION_FLAG_WGSL;
+		info->emulate_push_constants = info->emulate_push_constants || is_wgsl;
 		if (!is_wgsl && (shader.code_compression_flags != 0 || (shader.code_compressed_bytes.size() % 4) != 0)) {
 			ERR_PRINT("WebGPU driver: unexpected shader code encoding.");
 			failed = true;
@@ -1597,11 +1636,36 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 				}
 				entries.push_back(entry);
 			}
+			if (set == 0 && info->emulate_push_constants) {
+				entries.push_back(_push_constant_layout_entry());
+			}
 			WGPUBindGroupLayoutDescriptor layout_desc = {};
 			layout_desc.entryCount = entries.size();
 			layout_desc.entries = entries.ptr();
 			WGPUBindGroupLayout layout = wgpuDeviceCreateBindGroupLayout(device, &layout_desc);
 			info->set_layouts.push_back(layout);
+		}
+		if (!failed && info->emulate_push_constants && info->set_layouts.is_empty()) {
+			// No uniform sets at all: group 0 still has to carry the push constants.
+			WGPUBindGroupLayoutEntry entry = _push_constant_layout_entry();
+			WGPUBindGroupLayoutDescriptor layout_desc = {};
+			layout_desc.entryCount = 1;
+			layout_desc.entries = &entry;
+			info->set_layouts.push_back(wgpuDeviceCreateBindGroupLayout(device, &layout_desc));
+		}
+		if (!failed && info->emulate_push_constants) {
+			bool set0_has_uniforms = !info->reflection.uniform_sets.is_empty() && !info->reflection.uniform_sets[0].is_empty();
+			if (!set0_has_uniforms) {
+				WGPUBindGroupEntry entry = {};
+				entry.binding = RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING;
+				entry.buffer = push_constant_ring;
+				entry.size = RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE;
+				WGPUBindGroupDescriptor group_desc = {};
+				group_desc.layout = info->set_layouts[0];
+				group_desc.entryCount = 1;
+				group_desc.entries = &entry;
+				info->default_group0 = wgpuDeviceCreateBindGroup(device, &group_desc);
+			}
 		}
 	}
 
@@ -1609,8 +1673,9 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 		WGPUPipelineLayoutDescriptor pipeline_layout_desc = {};
 		pipeline_layout_desc.bindGroupLayoutCount = info->set_layouts.size();
 		pipeline_layout_desc.bindGroupLayouts = info->set_layouts.ptr();
-		pipeline_layout_desc.immediateSize = immediates_supported ? info->push_constant_size : 0;
-		ERR_FAIL_COND_V_MSG(info->push_constant_size > 0 && !immediates_supported, ShaderID(), "WebGPU driver: the shader uses push constants, but the adapter does not support immediates.");
+		pipeline_layout_desc.immediateSize = (immediates_supported && !info->emulate_push_constants) ? info->push_constant_size : 0;
+		ERR_FAIL_COND_V_MSG(info->push_constant_size > RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE, ShaderID(), "WebGPU driver: the push constants do not fit a slot.");
+		ERR_FAIL_COND_V_MSG(info->push_constant_size > 0 && !immediates_supported && !info->emulate_push_constants, ShaderID(), "WebGPU driver: the shader uses push constants, but the adapter does not support immediates. Bake the shaders to WGSL.");
 		info->pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &pipeline_layout_desc);
 		failed = info->pipeline_layout == nullptr;
 	}
@@ -1629,6 +1694,9 @@ void RenderingDeviceDriverWebGPU::shader_free(ShaderID p_shader) {
 			wgpuShaderModuleRelease(module);
 			module = nullptr;
 		}
+	}
+	if (info->default_group0) {
+		wgpuBindGroupRelease(info->default_group0);
 	}
 	if (info->pipeline_layout) {
 		wgpuPipelineLayoutRelease(info->pipeline_layout);
@@ -1703,6 +1771,14 @@ RenderingDeviceDriver::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_cre
 			default:
 				ERR_FAIL_V_MSG(UniformSetID(), vformat("WebGPU driver: uniform type %d is not supported yet.", (int)uniform.type));
 		}
+		entries.push_back(entry);
+	}
+
+	if (p_set_index == 0 && shader->emulate_push_constants) {
+		WGPUBindGroupEntry entry = {};
+		entry.binding = RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING;
+		entry.buffer = push_constant_ring;
+		entry.size = RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE;
 		entries.push_back(entry);
 	}
 
@@ -1874,6 +1950,25 @@ void RenderingDeviceDriverWebGPU::pipeline_free(PipelineID p_pipeline) {
 
 void RenderingDeviceDriverWebGPU::command_bind_push_constants(CommandBufferID p_cmd_buffer, ShaderID p_shader, uint32_t p_first_index, VectorView<uint32_t> p_data) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	const ShaderInfo *shader = (const ShaderInfo *)p_shader.id;
+	if (shader->emulate_push_constants) {
+		// Every call takes a fresh 256-byte slot of the ring; the queue write is ordered before the submit that
+		// contains the draw. The slot offset reaches the shader as the dynamic offset of the group 0 binding.
+		const uint32_t byte_offset = p_first_index * sizeof(uint32_t);
+		const uint32_t byte_size = p_data.size() * sizeof(uint32_t);
+		ERR_FAIL_COND(byte_offset + byte_size > RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE);
+		memcpy(cmd->push_shadow + byte_offset, p_data.ptr(), byte_size);
+		if (push_constant_next_slot >= PUSH_CONSTANT_SLOTS) {
+			ERR_PRINT_ONCE("WebGPU driver: the push constant ring is exhausted; draws reuse the last slot.");
+			push_constant_next_slot = PUSH_CONSTANT_SLOTS - 1;
+		}
+		cmd->push_offset = push_constant_next_slot * RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE;
+		wgpuQueueWriteBuffer(queue, push_constant_ring, cmd->push_offset, cmd->push_shadow, RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE);
+		push_constant_next_slot++;
+		cmd->shader = shader;
+		cmd->group0_dirty = true;
+		return;
+	}
 	ERR_FAIL_COND(!immediates_supported);
 	if (cmd->compute_pass) {
 #ifndef __EMSCRIPTEN__
@@ -1991,6 +2086,8 @@ void RenderingDeviceDriverWebGPU::command_begin_render_pass(CommandBufferID p_cm
 	desc.colorAttachments = colors.ptr();
 	desc.depthStencilAttachment = has_depth_stencil ? &depth_stencil : nullptr;
 	cmd->render_pass = wgpuCommandEncoderBeginRenderPass(cmd->encoder, &desc);
+	cmd->group0 = nullptr;
+	cmd->group0_dirty = true;
 }
 
 void RenderingDeviceDriverWebGPU::command_end_render_pass(CommandBufferID p_cmd_buffer) {
@@ -2023,30 +2120,42 @@ void RenderingDeviceDriverWebGPU::command_bind_render_pipeline(CommandBufferID p
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	const PipelineInfo *pipeline = (const PipelineInfo *)p_pipeline.id;
 	wgpuRenderPassEncoderSetPipeline(cmd->render_pass, pipeline->render);
+	cmd->shader = pipeline->shader;
+	cmd->group0_dirty = true;
 	wgpuRenderPassEncoderSetStencilReference(cmd->render_pass, pipeline->stencil_reference);
 }
 
 void RenderingDeviceDriverWebGPU::command_bind_render_uniform_sets(CommandBufferID p_cmd_buffer, VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count, uint32_t p_dynamic_offsets) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	const ShaderInfo *shader = (const ShaderInfo *)p_shader.id;
 	for (uint32_t i = 0; i < p_set_count; i++) {
 		const UniformSetInfo *set = (const UniformSetInfo *)p_uniform_sets[i].id;
+		if (p_first_set_index + i == 0 && shader->emulate_push_constants) {
+			cmd->group0 = set->bind_group;
+			cmd->shader = shader;
+			cmd->group0_dirty = true;
+			continue;
+		}
 		wgpuRenderPassEncoderSetBindGroup(cmd->render_pass, p_first_set_index + i, set->bind_group, 0, nullptr);
 	}
 }
 
 void RenderingDeviceDriverWebGPU::command_render_draw(CommandBufferID p_cmd_buffer, uint32_t p_vertex_count, uint32_t p_instance_count, uint32_t p_base_vertex, uint32_t p_first_instance) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	_flush_group0(cmd, false);
 	wgpuRenderPassEncoderDraw(cmd->render_pass, p_vertex_count, p_instance_count, p_base_vertex, p_first_instance);
 }
 
 void RenderingDeviceDriverWebGPU::command_render_draw_indexed(CommandBufferID p_cmd_buffer, uint32_t p_index_count, uint32_t p_instance_count, uint32_t p_first_index, int32_t p_vertex_offset, uint32_t p_first_instance) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
+	_flush_group0(cmd, false);
 	wgpuRenderPassEncoderDrawIndexed(cmd->render_pass, p_index_count, p_instance_count, p_first_index, p_vertex_offset, p_first_instance);
 }
 
 void RenderingDeviceDriverWebGPU::command_render_draw_indexed_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	const BufferInfo *buffer = (const BufferInfo *)p_indirect_buffer.id;
+	_flush_group0(cmd, false);
 	for (uint32_t i = 0; i < p_draw_count; i++) {
 		wgpuRenderPassEncoderDrawIndexedIndirect(cmd->render_pass, buffer->buffer, p_offset + (uint64_t)i * p_stride);
 	}
@@ -2059,6 +2168,7 @@ void RenderingDeviceDriverWebGPU::command_render_draw_indexed_indirect_count(Com
 void RenderingDeviceDriverWebGPU::command_render_draw_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	const BufferInfo *buffer = (const BufferInfo *)p_indirect_buffer.id;
+	_flush_group0(cmd, false);
 	for (uint32_t i = 0; i < p_draw_count; i++) {
 		wgpuRenderPassEncoderDrawIndirect(cmd->render_pass, buffer->buffer, p_offset + (uint64_t)i * p_stride);
 	}
@@ -2223,13 +2333,22 @@ void RenderingDeviceDriverWebGPU::command_bind_compute_pipeline(CommandBufferID 
 	const PipelineInfo *pipeline = (const PipelineInfo *)p_pipeline.id;
 	_ensure_compute_pass(cmd);
 	wgpuComputePassEncoderSetPipeline(cmd->compute_pass, pipeline->compute);
+	cmd->shader = pipeline->shader;
+	cmd->group0_dirty = true;
 }
 
 void RenderingDeviceDriverWebGPU::command_bind_compute_uniform_sets(CommandBufferID p_cmd_buffer, VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count, uint32_t p_dynamic_offsets) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	_ensure_compute_pass(cmd);
+	const ShaderInfo *shader = (const ShaderInfo *)p_shader.id;
 	for (uint32_t i = 0; i < p_set_count; i++) {
 		const UniformSetInfo *set = (const UniformSetInfo *)p_uniform_sets[i].id;
+		if (p_first_set_index + i == 0 && shader->emulate_push_constants) {
+			cmd->group0 = set->bind_group;
+			cmd->shader = shader;
+			cmd->group0_dirty = true;
+			continue;
+		}
 		wgpuComputePassEncoderSetBindGroup(cmd->compute_pass, p_first_set_index + i, set->bind_group, 0, nullptr);
 	}
 }
@@ -2237,6 +2356,7 @@ void RenderingDeviceDriverWebGPU::command_bind_compute_uniform_sets(CommandBuffe
 void RenderingDeviceDriverWebGPU::command_compute_dispatch(CommandBufferID p_cmd_buffer, uint32_t p_x_groups, uint32_t p_y_groups, uint32_t p_z_groups) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	_ensure_compute_pass(cmd);
+	_flush_group0(cmd, true);
 	wgpuComputePassEncoderDispatchWorkgroups(cmd->compute_pass, p_x_groups, p_y_groups, p_z_groups);
 }
 
@@ -2244,6 +2364,7 @@ void RenderingDeviceDriverWebGPU::command_compute_dispatch_indirect(CommandBuffe
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	const BufferInfo *buffer = (const BufferInfo *)p_indirect_buffer.id;
 	_ensure_compute_pass(cmd);
+	_flush_group0(cmd, true);
 	wgpuComputePassEncoderDispatchWorkgroupsIndirect(cmd->compute_pass, buffer->buffer, p_offset);
 }
 
@@ -2293,6 +2414,8 @@ void RenderingDeviceDriverWebGPU::_ensure_compute_pass(CommandBufferInfo *p_cmd)
 	if (!p_cmd->compute_pass) {
 		WGPUComputePassDescriptor desc = {};
 		p_cmd->compute_pass = wgpuCommandEncoderBeginComputePass(p_cmd->encoder, &desc);
+		p_cmd->group0 = nullptr;
+		p_cmd->group0_dirty = true;
 	}
 }
 
@@ -2445,7 +2568,7 @@ uint64_t RenderingDeviceDriverWebGPU::limit_get(Limit p_limit) {
 		case LIMIT_MAX_UNIFORM_BUFFERS_PER_SHADER_STAGE:
 			return limits.maxUniformBuffersPerShaderStage;
 		case LIMIT_MAX_PUSH_CONSTANT_SIZE:
-			return immediates_supported ? limits.maxImmediateSize : 0;
+			return RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE;
 		case LIMIT_MAX_UNIFORM_BUFFER_SIZE:
 			return limits.maxUniformBufferBindingSize;
 		case LIMIT_MAX_VERTEX_INPUT_ATTRIBUTE_OFFSET:

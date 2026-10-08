@@ -351,6 +351,8 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 		return false;
 	}
 	r_wgsl = FileAccess::get_file_as_string(output);
+	// No browser supports `var<immediate>` yet: push constants become a uniform buffer in group 0 (see the driver).
+	r_wgsl = r_wgsl.replace("var<immediate> ", vformat("@group(0) @binding(%d) var<uniform> ", RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING));
 	return !r_wgsl.is_empty();
 }
 #endif

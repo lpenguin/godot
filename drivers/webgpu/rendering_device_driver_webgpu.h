@@ -93,6 +93,9 @@ public:
 		WGPUPipelineLayout pipeline_layout = nullptr;
 		WGPUShaderModule modules[SHADER_STAGE_MAX] = {};
 		uint32_t push_constant_size = 0;
+		// WGSL shaders keep push constants in a uniform buffer in group 0 (see command_bind_push_constants).
+		bool emulate_push_constants = false;
+		WGPUBindGroup default_group0 = nullptr; // Group 0 for shaders that have no uniform set 0 of their own.
 	};
 
 	struct UniformSetInfo {
@@ -149,6 +152,13 @@ public:
 		WGPURenderPassEncoder render_pass = nullptr;
 		LocalVector<WGPUTextureView> temporary_views;
 		WGPUCommandBuffer finished = nullptr;
+		// Push constant emulation: group 0 is bound lazily, right before a draw or dispatch, with the dynamic offset of
+		// the latest push constant slot.
+		const ShaderInfo *shader = nullptr;
+		WGPUBindGroup group0 = nullptr;
+		uint32_t push_offset = 0;
+		bool group0_dirty = false;
+		uint8_t push_shadow[RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE] = {};
 	};
 
 private:
@@ -157,6 +167,9 @@ private:
 	WGPUQueue queue = nullptr;
 	WGPULimits limits = {};
 	bool immediates_supported = false;
+	WGPUBuffer push_constant_ring = nullptr;
+	uint32_t push_constant_next_slot = 0;
+	static constexpr uint32_t PUSH_CONSTANT_SLOTS = 16384;
 	uint64_t total_memory_used = 0;
 
 	RenderingShaderContainerFormatWebGPU shader_container_format;
@@ -169,6 +182,7 @@ private:
 	void _end_compute_pass(CommandBufferInfo *p_cmd);
 	void _ensure_compute_pass(CommandBufferInfo *p_cmd);
 	void _end_render_pass(CommandBufferInfo *p_cmd);
+	void _flush_group0(CommandBufferInfo *p_cmd, bool p_compute);
 	void _release_swap_chain_image(SwapChainInfo *p_swap_chain);
 	bool _map_for_read(BufferInfo *p_buffer);
 

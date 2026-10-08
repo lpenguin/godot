@@ -45,6 +45,11 @@ public:
 		COMPRESSION_FLAG_WGSL = 0x20000,
 	};
 
+	// Browsers have no push constants. WGSL shaders keep them in a uniform buffer that the driver binds in group 0 with a
+	// dynamic offset, see RenderingDeviceDriverWebGPU::command_bind_push_constants().
+	static const uint32_t PUSH_CONSTANT_BINDING = 900;
+	static const uint32_t PUSH_CONSTANT_SLOT_SIZE = 256; // Also the minimum uniform buffer offset alignment.
+
 	// Per-binding information that WebGPU bind group layouts need and the generic reflection does not carry.
 	struct BindingExtra {
 		uint32_t image_format = 0; // SpvImageFormat.
