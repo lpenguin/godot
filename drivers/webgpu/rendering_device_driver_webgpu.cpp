@@ -696,6 +696,18 @@ Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t 
 
 	WGPULimits adapter_limits = {};
 	wgpuAdapterGetLimits(adapter, &adapter_limits);
+#ifndef __EMSCRIPTEN__
+	// Debug aid: GODOT_WEBGPU_BROWSER_LIMITS=1 caps the device to what Chromium on an Intel GPU offers, so that the
+	// native build hits the same validation errors a browser would.
+	if (OS::get_singleton()->get_environment("GODOT_WEBGPU_BROWSER_LIMITS") == "1") {
+		adapter_limits.maxSampledTexturesPerShaderStage = MIN(adapter_limits.maxSampledTexturesPerShaderStage, 48u);
+		adapter_limits.maxSamplersPerShaderStage = MIN(adapter_limits.maxSamplersPerShaderStage, 16u);
+		adapter_limits.maxStorageTexturesPerShaderStage = MIN(adapter_limits.maxStorageTexturesPerShaderStage, 8u);
+		adapter_limits.maxStorageBuffersPerShaderStage = MIN(adapter_limits.maxStorageBuffersPerShaderStage, 16u);
+		adapter_limits.maxUniformBuffersPerShaderStage = MIN(adapter_limits.maxUniformBuffersPerShaderStage, 12u);
+		adapter_limits.maxBindGroups = MIN(adapter_limits.maxBindGroups, 4u);
+	}
+#endif
 
 	LocalVector<WGPUFeatureName> features;
 	const WGPUFeatureName optional_features[] = {
