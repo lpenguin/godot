@@ -294,7 +294,7 @@ WGPUTextureFormat _spv_image_format_to_wgpu(uint32_t p_spv_format) {
 		case SpvImageFormatRg8Snorm:
 			return WGPUTextureFormat_RG8Snorm;
 		case SpvImageFormatR16Snorm:
-			return WGPUTextureFormat_R16Snorm;
+			return WGPUTextureFormat_RGBA16Float; // See _storage_format().
 		case SpvImageFormatR8Snorm:
 			return WGPUTextureFormat_R8Snorm;
 		case SpvImageFormatRgba32i:
@@ -455,6 +455,8 @@ WGPUTextureFormat _storage_format(WGPUTextureFormat p_format) {
 		case WGPUTextureFormat_R8Unorm:
 		case WGPUTextureFormat_RG8Unorm:
 			return WGPUTextureFormat_RGBA8Unorm;
+		case WGPUTextureFormat_R16Snorm: // 16-bit normalized formats need an optional feature that browsers do not have.
+			return WGPUTextureFormat_RGBA16Float;
 		default:
 			return p_format;
 	}
@@ -463,6 +465,7 @@ WGPUTextureFormat _storage_format(WGPUTextureFormat p_format) {
 bool _format_has_storage_support(RenderingDeviceCommons::DataFormat p_format) {
 	using RDC = RenderingDeviceCommons;
 	switch (p_format) {
+		case RDC::DATA_FORMAT_R16_SNORM: // Stored as RGBA16F, see _storage_format().
 		case RDC::DATA_FORMAT_R8_UNORM: // Stored as RGBA8, see _storage_format().
 		case RDC::DATA_FORMAT_R8G8_UNORM:
 		case RDC::DATA_FORMAT_R8G8B8A8_UNORM:

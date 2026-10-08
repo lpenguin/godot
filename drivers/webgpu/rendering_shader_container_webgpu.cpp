@@ -37,7 +37,7 @@
 #include "core/templates/hash_set.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
-const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 8;
+const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 9;
 
 namespace {
 
@@ -542,6 +542,11 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 			for (const char *narrow : { "r8unorm", "rg8unorm" }) {
 				r_wgsl = r_wgsl.replace(vformat("texture_storage_%s<%s, %s>", dimension, narrow, access), vformat("texture_storage_%s<rgba8unorm, %s>", dimension, access));
 			}
+		}
+	}
+	for (const char *dimension : { "2d", "2d_array", "3d" }) {
+		for (const char *access : { "write", "read", "read_write" }) {
+			r_wgsl = r_wgsl.replace(vformat("texture_storage_%s<r16snorm, %s>", dimension, access), vformat("texture_storage_%s<rgba16float, %s>", dimension, access));
 		}
 	}
 	r_wgsl = r_wgsl.replace("var<immediate> ", vformat("@group(0) @binding(%d) var<uniform> ", RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING));
