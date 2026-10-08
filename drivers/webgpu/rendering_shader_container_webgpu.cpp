@@ -37,7 +37,7 @@
 #include "core/templates/hash_set.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
-const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 5;
+const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 7;
 
 namespace {
 
@@ -105,6 +105,135 @@ Vector<uint8_t> _strip_buffer_non_readable(const Vector<uint8_t> &p_spirv) {
 // * OpMemoryBarrier (GLSL memoryBarrierShared(), groupMemoryBarrier()). Godot always pairs it with barrier(), and the
 //   OpControlBarrier that follows already carries the workgroup memory semantics, which becomes workgroupBarrier().
 // * OpIsNan and OpIsInf: WGSL has no NaN or infinity. They become a comparison that is always false (same result type).
+// SPIR-V 1.4 modules (compiled by drivers that target Vulkan 1.2+) are rewritten to 1.3, which is what Tint validates against.
+// Two differences matter: 1.4 entry points list every global variable in their interface, and 1.4 allows OpSelect to pick
+// whole vectors with a scalar condition.
+Vector<uint8_t> _downgrade_spirv_version(const Vector<uint8_t> &p_spirv) {
+	constexpr uint32_t OP_ENTRY_POINT = 15;
+	constexpr uint32_t OP_TYPE_BOOL = 20;
+	constexpr uint32_t OP_TYPE_VECTOR = 23;
+	constexpr uint32_t OP_FUNCTION = 54;
+	constexpr uint32_t OP_VARIABLE = 59;
+	constexpr uint32_t OP_COMPOSITE_CONSTRUCT = 80;
+	constexpr uint32_t OP_SELECT = 169;
+	constexpr uint32_t SPIRV_1_3 = 0x00010300;
+	const uint32_t word_count = p_spirv.size() / 4;
+	const uint32_t *words = (const uint32_t *)p_spirv.ptr();
+	if (word_count < 5 || words[1] <= SPIRV_1_3) {
+		return p_spirv;
+	}
+	HashMap<uint32_t, uint32_t> storage_class;
+	HashMap<uint32_t, uint32_t> value_type; // For the instructions that can produce a select condition.
+	HashMap<uint32_t, uint32_t> vector_size; // Vector type id -> component count.
+	HashMap<uint32_t, uint32_t> bool_vector; // Component count -> bool vector type id.
+	uint32_t bool_type = 0;
+	for (uint32_t i = 5; i < word_count;) {
+		const uint32_t length = words[i] >> 16;
+		const uint32_t opcode = words[i] & 0xFFFF;
+		if (length == 0 || i + length > word_count) {
+			return p_spirv;
+		}
+		if (opcode == OP_VARIABLE && length >= 4) {
+			storage_class[words[i + 2]] = words[i + 3];
+		} else if (opcode == OP_TYPE_BOOL) {
+			bool_type = words[i + 1];
+		} else if (opcode == OP_TYPE_VECTOR && length >= 4) {
+			vector_size[words[i + 1]] = words[i + 3];
+			if (words[i + 2] == bool_type) {
+				bool_vector[words[i + 3]] = words[i + 1];
+			}
+		} else if (length >= 3 && (opcode == 1 || opcode == 12 || opcode == 41 || opcode == 42 || opcode == 48 || opcode == 49 || opcode == 55 || opcode == 57 || opcode == 61 || opcode == 81 || (opcode >= 154 && opcode <= 190) || opcode == 245)) {
+			value_type[words[i + 2]] = words[i + 1];
+		}
+		i += length;
+	}
+
+	// Bool vector types needed by selects with a scalar condition.
+	uint32_t bound = words[3];
+	LocalVector<uint32_t> new_types; // Words of OpTypeVector declarations to emit before the first function.
+	uint32_t select_count = 0;
+	for (uint32_t i = 5; i < word_count;) {
+		const uint32_t length = words[i] >> 16;
+		if ((words[i] & 0xFFFF) == OP_SELECT && length == 6) {
+			const uint32_t *size = vector_size.getptr(words[i + 1]);
+			const uint32_t *cond_type = value_type.getptr(words[i + 3]);
+			if (size && cond_type && *cond_type == bool_type) {
+				select_count++;
+				if (!bool_vector.has(*size)) {
+					bool_vector[*size] = bound++;
+					new_types.push_back((4u << 16) | OP_TYPE_VECTOR);
+					new_types.push_back(bool_vector[*size]);
+					new_types.push_back(bool_type);
+					new_types.push_back(*size);
+				}
+			}
+		}
+		i += length;
+	}
+
+	Vector<uint8_t> result;
+	result.resize(p_spirv.size() + new_types.size() * sizeof(uint32_t) + select_count * 7 * sizeof(uint32_t) + 64);
+	uint32_t *out = (uint32_t *)result.ptrw();
+	memcpy(out, words, 5 * sizeof(uint32_t));
+	out[1] = SPIRV_1_3;
+	uint32_t out_count = 5;
+	bool types_emitted = false;
+	for (uint32_t i = 5; i < word_count;) {
+		const uint32_t length = words[i] >> 16;
+		const uint32_t opcode = words[i] & 0xFFFF;
+		if (opcode == OP_FUNCTION && !types_emitted) {
+			types_emitted = true;
+			for (uint32_t w : new_types) {
+				out[out_count++] = w;
+			}
+		}
+		if (opcode == OP_ENTRY_POINT) {
+			// Header: execution model, function id, name (nul-terminated string words), then interface ids.
+			uint32_t name_end = i + 3;
+			while (name_end < i + length) {
+				const uint32_t w = words[name_end++];
+				if (((w >> 24) & 0xFF) == 0 || ((w >> 16) & 0xFF) == 0 || ((w >> 8) & 0xFF) == 0 || (w & 0xFF) == 0) {
+					break;
+				}
+			}
+			const uint32_t start = out_count;
+			out_count++; // Length is patched below.
+			for (uint32_t j = i + 1; j < name_end; j++) {
+				out[out_count++] = words[j];
+			}
+			for (uint32_t j = name_end; j < i + length; j++) {
+				const uint32_t *sc = storage_class.getptr(words[j]);
+				if (!sc || *sc == 1 || *sc == 3) { // Input and Output only.
+					out[out_count++] = words[j];
+				}
+			}
+			out[start] = ((out_count - start) << 16) | OP_ENTRY_POINT;
+		} else if (opcode == OP_SELECT && length == 6 && vector_size.has(words[i + 1]) && value_type.has(words[i + 3]) && value_type[words[i + 3]] == bool_type) {
+			const uint32_t size = vector_size[words[i + 1]];
+			const uint32_t condition = bound++;
+			out[out_count++] = ((3u + size) << 16) | OP_COMPOSITE_CONSTRUCT;
+			out[out_count++] = bool_vector[size];
+			out[out_count++] = condition;
+			for (uint32_t c = 0; c < size; c++) {
+				out[out_count++] = words[i + 3];
+			}
+			out[out_count++] = words[i];
+			out[out_count++] = words[i + 1];
+			out[out_count++] = words[i + 2];
+			out[out_count++] = condition;
+			out[out_count++] = words[i + 4];
+			out[out_count++] = words[i + 5];
+		} else {
+			memcpy(out + out_count, words + i, length * sizeof(uint32_t));
+			out_count += length;
+		}
+		i += length;
+	}
+	out[3] = bound;
+	result.resize(out_count * sizeof(uint32_t));
+	return result;
+}
+
 Vector<uint8_t> _lower_unsupported_instructions(const Vector<uint8_t> &p_spirv) {
 	constexpr uint32_t OP_IS_NAN = 156;
 	constexpr uint32_t OP_IS_INF = 157;
@@ -555,7 +684,7 @@ bool RenderingShaderContainerWebGPU::_set_code_from_spirv(const ReflectShader &p
 	for (uint32_t i = 0; i < stages.size(); i++) {
 		RenderingShaderContainer::Shader &shader = shaders.ptrw()[i];
 		shader.shader_stage = stages[i].shader_stage;
-		Vector<uint8_t> spirv = _lower_unsupported_instructions(_strip_buffer_non_readable(stages[i].spirv_data()));
+		Vector<uint8_t> spirv = _lower_unsupported_instructions(_downgrade_spirv_version(_strip_buffer_non_readable(stages[i].spirv_data())));
 		if (stages[i].shader_stage == RDC::SHADER_STAGE_VERTEX) {
 			spirv = _flip_vertex_y(spirv);
 		}
