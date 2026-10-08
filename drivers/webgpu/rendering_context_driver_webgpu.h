@@ -53,8 +53,8 @@ public:
 	// What a window needs to be presented to: a canvas selector in the browser, a window handle natively.
 	struct WindowPlatformData {
 		const char *canvas_selector = "#canvas";
-		void *window = nullptr; // HWND.
-		void *instance = nullptr; // HINSTANCE.
+		void *window = nullptr; // HWND, or the X11 Window.
+		void *instance = nullptr; // HINSTANCE, or the X11 Display *.
 	};
 
 	WGPUSurface surface_get(SurfaceID p_surface) const { return ((const Surface *)p_surface)->surface; }

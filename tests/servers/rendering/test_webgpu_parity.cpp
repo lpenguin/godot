@@ -40,7 +40,13 @@ TEST_FORCE_LINK(test_webgpu_parity)
 #include "servers/rendering/rendering_device.h"
 
 #ifdef VULKAN_ENABLED
+#ifdef WINDOWS_ENABLED
 #include "platform/windows/rendering_context_driver_vulkan_windows.h"
+using TestVulkanContext = RenderingContextDriverVulkanWindows;
+#else
+#include "platform/linuxbsd/x11/rendering_context_driver_vulkan_x11.h"
+using TestVulkanContext = RenderingContextDriverVulkanX11;
+#endif
 #endif
 
 // Runs the WoodWorks sparse-SDF compute pipeline (classify, fill, carve, shaving, surface probe) on a
@@ -558,7 +564,7 @@ TEST_CASE("[WebGPU][Parity] WoodWorks sparse SDF pipeline matches the CPU refere
 
 #ifdef VULKAN_ENABLED
 	{
-		RenderingContextDriverVulkanWindows vulkan_context;
+		TestVulkanContext vulkan_context;
 		if (vulkan_context.initialize() != OK) {
 			WARN("Vulkan is unavailable, skipping the comparison.");
 			return;
@@ -677,7 +683,7 @@ TEST_CASE("[WebGPU][Bake] Bake shader containers and Vulkan reference outputs") 
 	memdelete(webgpu_rd);
 	REQUIRE(baked_run.ok);
 
-	RenderingContextDriverVulkanWindows vulkan_context;
+	TestVulkanContext vulkan_context;
 	REQUIRE(vulkan_context.initialize() == OK);
 	RD *vulkan_rd = memnew(RD);
 	REQUIRE(vulkan_rd->initialize(&vulkan_context) == OK);

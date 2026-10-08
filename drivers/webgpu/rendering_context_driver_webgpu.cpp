@@ -162,10 +162,17 @@ RenderingContextDriver::SurfaceID RenderingContextDriverWebGPU::surface_create(c
 	source.selector.data = data->canvas_selector;
 	source.selector.length = WGPU_STRLEN;
 #else
+#ifdef WINDOWS_ENABLED
 	WGPUSurfaceSourceWindowsHWND source = {};
 	source.chain.sType = WGPUSType_SurfaceSourceWindowsHWND;
 	source.hinstance = data->instance;
 	source.hwnd = data->window;
+#else
+	WGPUSurfaceSourceXlibWindow source = {};
+	source.chain.sType = WGPUSType_SurfaceSourceXlibWindow;
+	source.display = data->instance; // Display *.
+	source.window = (uint64_t)(uintptr_t)data->window; // Window.
+#endif
 #endif
 	descriptor.nextInChain = &source.chain;
 	WGPUSurface wgpu_surface = wgpuInstanceCreateSurface(instance, &descriptor);
