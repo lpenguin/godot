@@ -420,6 +420,29 @@ WGPUBindGroupLayoutEntry _push_constant_layout_entry() {
 	return entry;
 }
 
+// Views that are bound as sampled textures must select one aspect; a depth-stencil format is then sampled as depth.
+WGPUTextureAspect _sampling_aspect(WGPUTextureFormat p_format) {
+	switch (p_format) {
+		case WGPUTextureFormat_Depth24PlusStencil8:
+		case WGPUTextureFormat_Depth32FloatStencil8:
+			return WGPUTextureAspect_DepthOnly;
+		default:
+			return WGPUTextureAspect_All;
+	}
+}
+
+// The format a view needs when it selects the depth aspect of a depth-stencil texture.
+WGPUTextureFormat _sampling_format(WGPUTextureFormat p_format) {
+	switch (p_format) {
+		case WGPUTextureFormat_Depth24PlusStencil8:
+			return WGPUTextureFormat_Depth24Plus;
+		case WGPUTextureFormat_Depth32FloatStencil8:
+			return WGPUTextureFormat_Depth32Float;
+		default:
+			return p_format;
+	}
+}
+
 bool _format_has_storage_support(RenderingDeviceCommons::DataFormat p_format) {
 	using RDC = RenderingDeviceCommons;
 	switch (p_format) {
@@ -922,7 +945,8 @@ RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGPU::texture_create(con
 	view_desc.mipLevelCount = p_format.mipmaps;
 	view_desc.baseArrayLayer = 0;
 	view_desc.arrayLayerCount = p_format.texture_type == TEXTURE_TYPE_3D ? 1 : p_format.array_layers;
-	view_desc.aspect = WGPUTextureAspect_All;
+	view_desc.aspect = _sampling_aspect(view_desc.format);
+	view_desc.format = _sampling_format(view_desc.format);
 	view_desc.usage = WGPUTextureUsage_None; // Inherit the texture usage.
 	info->view = wgpuTextureCreateView(texture, &view_desc);
 	info->view_dimension = view_desc.dimension;
@@ -952,7 +976,8 @@ RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGPU::texture_create_sha
 	view_desc.dimension = _texture_type_to_view_dimension(original->type);
 	view_desc.mipLevelCount = original->mipmaps;
 	view_desc.arrayLayerCount = original->type == TEXTURE_TYPE_3D ? 1 : original->layers;
-	view_desc.aspect = WGPUTextureAspect_All;
+	view_desc.aspect = _sampling_aspect(view_desc.format);
+	view_desc.format = _sampling_format(view_desc.format);
 	view_desc.usage = WGPUTextureUsage_None; // Inherit the texture usage.
 	info->view = wgpuTextureCreateView(info->texture, &view_desc);
 	info->owns_texture = false;
@@ -999,7 +1024,8 @@ RenderingDeviceDriver::TextureID RenderingDeviceDriverWebGPU::texture_create_sha
 	view_desc.mipLevelCount = p_mipmaps;
 	view_desc.baseArrayLayer = p_layer;
 	view_desc.arrayLayerCount = p_slice_type == TEXTURE_SLICE_3D ? 1 : p_layers;
-	view_desc.aspect = WGPUTextureAspect_All;
+	view_desc.aspect = _sampling_aspect(view_desc.format);
+	view_desc.format = _sampling_format(view_desc.format);
 	view_desc.usage = WGPUTextureUsage_None; // Inherit the texture usage.
 	info->view = wgpuTextureCreateView(info->texture, &view_desc);
 	info->owns_texture = false;
@@ -1086,7 +1112,7 @@ RenderingDeviceDriver::SamplerID RenderingDeviceDriverWebGPU::sampler_create(con
 	desc.magFilter = p_state.mag_filter == SAMPLER_FILTER_LINEAR ? WGPUFilterMode_Linear : WGPUFilterMode_Nearest;
 	desc.minFilter = p_state.min_filter == SAMPLER_FILTER_LINEAR ? WGPUFilterMode_Linear : WGPUFilterMode_Nearest;
 	desc.mipmapFilter = p_state.mip_filter == SAMPLER_FILTER_LINEAR ? WGPUMipmapFilterMode_Linear : WGPUMipmapFilterMode_Nearest;
-	desc.lodMinClamp = p_state.min_lod;
+	desc.lodMinClamp = MAX(p_state.min_lod, 0.0f); // Negative LOD clamps are invalid.
 	desc.lodMaxClamp = MIN(p_state.max_lod, 32.0f);
 	desc.compare = p_state.enable_compare ? _to_wgpu_compare(p_state.compare_op) : WGPUCompareFunction_Undefined;
 	const bool all_linear = desc.magFilter == WGPUFilterMode_Linear && desc.minFilter == WGPUFilterMode_Linear && desc.mipmapFilter == WGPUMipmapFilterMode_Linear;
@@ -1638,6 +1664,7 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 			LocalVector<WGPUBindGroupLayoutEntry> entries;
 			for (const ShaderUniform &uniform : info->reflection.uniform_sets[set]) {
 				const RenderingShaderContainerWebGPU::BindingExtra extra = info->binding_extras[flat_index++];
+				info->extras_by_binding[((uint64_t)set << 32) | uniform.binding] = extra;
 
 				WGPUBindGroupLayoutEntry entry = {};
 				entry.binding = uniform.binding;
@@ -1679,7 +1706,7 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 					} break;
 					case UNIFORM_TYPE_TEXTURE:
 					case UNIFORM_TYPE_SAMPLER_WITH_TEXTURE:
-						entry.texture.sampleType = extra.depth ? WGPUTextureSampleType_Depth : (extra.numeric == 1 ? WGPUTextureSampleType_Sint : (extra.numeric == 2 ? WGPUTextureSampleType_Uint : WGPUTextureSampleType_Float));
+						entry.texture.sampleType = extra.depth ? WGPUTextureSampleType_Depth : (extra.numeric == 1 ? WGPUTextureSampleType_Sint : (extra.numeric == 2 ? WGPUTextureSampleType_Uint : (extra.depth_like ? WGPUTextureSampleType_UnfilterableFloat : WGPUTextureSampleType_Float)));
 						entry.texture.viewDimension = _spv_dim_to_view_dimension(extra.dim, extra.arrayed);
 						entry.texture.multisampled = extra.multisampled;
 						if (uniform.type == UNIFORM_TYPE_SAMPLER_WITH_TEXTURE) {
@@ -1688,13 +1715,13 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 							WGPUBindGroupLayoutEntry sampler_entry = {};
 							sampler_entry.binding = uniform.binding + RenderingShaderContainerWebGPU::COMBINED_SAMPLER_BINDING_OFFSET;
 							sampler_entry.visibility = entry.visibility;
-							sampler_entry.sampler.type = extra.comparison ? WGPUSamplerBindingType_Comparison : WGPUSamplerBindingType_Filtering;
+							sampler_entry.sampler.type = extra.comparison ? WGPUSamplerBindingType_Comparison : ((extra.depth_like || extra.nearest) ? WGPUSamplerBindingType_NonFiltering : WGPUSamplerBindingType_Filtering);
 							entries.push_back(texture_entry);
 							entry = sampler_entry;
 						}
 						break;
 					case UNIFORM_TYPE_SAMPLER:
-						entry.sampler.type = extra.comparison ? WGPUSamplerBindingType_Comparison : WGPUSamplerBindingType_Filtering;
+						entry.sampler.type = extra.comparison ? WGPUSamplerBindingType_Comparison : (extra.nearest ? WGPUSamplerBindingType_NonFiltering : WGPUSamplerBindingType_Filtering);
 						break;
 					default:
 						ERR_PRINT(vformat("WebGPU driver: uniform type %d is not supported yet (shader '%s').", (int)uniform.type, info->name));
@@ -1791,6 +1818,45 @@ void RenderingDeviceDriverWebGPU::shader_destroy_modules(ShaderID p_shader) {
 
 // ----- Uniform sets -----
 
+WGPUTextureView RenderingDeviceDriverWebGPU::_view_for_binding(const TextureInfo *p_texture, const ShaderInfo *p_shader, uint32_t p_set, uint32_t p_binding, LocalVector<WGPUTextureView> &r_temporary_views) {
+	const RenderingShaderContainerWebGPU::BindingExtra *extra = p_shader->extras_by_binding.getptr(((uint64_t)p_set << 32) | p_binding);
+	if (!extra) {
+		return p_texture->view;
+	}
+	const WGPUTextureViewDimension expected = _spv_dim_to_view_dimension(extra->dim, extra->arrayed);
+	if (expected == p_texture->view_dimension || p_texture->view_dimension == WGPUTextureViewDimension_3D || expected == WGPUTextureViewDimension_3D) {
+		return p_texture->view;
+	}
+	WGPUTextureViewDescriptor view_desc = {};
+	view_desc.format = _sampling_format(p_texture->wgpu_format);
+	view_desc.dimension = expected;
+	view_desc.baseMipLevel = p_texture->base_mip;
+	view_desc.mipLevelCount = p_texture->view_mip_count;
+	view_desc.baseArrayLayer = p_texture->base_layer;
+	switch (expected) {
+		case WGPUTextureViewDimension_2D:
+			view_desc.arrayLayerCount = 1;
+			break;
+		case WGPUTextureViewDimension_Cube:
+			view_desc.arrayLayerCount = 6;
+			break;
+		case WGPUTextureViewDimension_CubeArray:
+			view_desc.arrayLayerCount = MAX(p_texture->view_layer_count / 6, 1u) * 6;
+			break;
+		default:
+			view_desc.arrayLayerCount = p_texture->view_layer_count;
+			break;
+	}
+	view_desc.aspect = _sampling_aspect(p_texture->wgpu_format);
+	view_desc.usage = WGPUTextureUsage_None;
+	WGPUTextureView view = wgpuTextureCreateView(p_texture->texture, &view_desc);
+	if (!view) {
+		return p_texture->view;
+	}
+	r_temporary_views.push_back(view);
+	return view;
+}
+
 RenderingDeviceDriver::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_create(VectorView<BoundUniform> p_uniforms, ShaderID p_shader, uint32_t p_set_index, int p_linear_pool_index) {
 	const ShaderInfo *shader = (const ShaderInfo *)p_shader.id;
 	ERR_FAIL_COND_V(p_set_index >= shader->set_layouts.size(), UniformSetID());
@@ -1838,13 +1904,13 @@ RenderingDeviceDriver::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_cre
 			} break;
 			case UNIFORM_TYPE_TEXTURE: {
 				const TextureInfo *texture = (const TextureInfo *)uniform.ids[0].id;
-				entry.textureView = texture->view;
+				entry.textureView = _view_for_binding(texture, shader, p_set_index, uniform.binding, temporary_views);
 			} break;
 			case UNIFORM_TYPE_SAMPLER_WITH_TEXTURE: {
 				// ids: the sampler first, then the texture.
 				const SamplerInfo *sampler = (const SamplerInfo *)uniform.ids[0].id;
 				const TextureInfo *texture = (const TextureInfo *)uniform.ids[1].id;
-				entry.textureView = texture->view;
+				entry.textureView = _view_for_binding(texture, shader, p_set_index, uniform.binding, temporary_views);
 				WGPUBindGroupEntry sampler_entry = {};
 				sampler_entry.binding = uniform.binding + RenderingShaderContainerWebGPU::COMBINED_SAMPLER_BINDING_OFFSET;
 				sampler_entry.sampler = sampler->sampler;
@@ -1869,7 +1935,9 @@ RenderingDeviceDriver::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_cre
 		entries.push_back(entry);
 	}
 
+	const CharString group_label = vformat("%s set %d", shader->name, (int)p_set_index).utf8();
 	WGPUBindGroupDescriptor desc = {};
+	desc.label = _sv(group_label.get_data());
 	desc.layout = shader->set_layouts[p_set_index];
 	desc.entryCount = entries.size();
 	desc.entries = entries.ptr();
@@ -2123,7 +2191,8 @@ void RenderingDeviceDriverWebGPU::command_begin_render_pass(CommandBufferID p_cm
 
 	// A render target must be a single mip level and layer of a 2D texture.
 	auto render_view = [&](const TextureInfo *p_texture) -> WGPUTextureView {
-		if (p_texture->view_mip_count == 1 && p_texture->view_layer_count == 1 && p_texture->view_dimension == WGPUTextureViewDimension_2D) {
+		// The default view of a depth-stencil texture selects the depth aspect for sampling; attachments need all aspects.
+		if (p_texture->view_mip_count == 1 && p_texture->view_layer_count == 1 && p_texture->view_dimension == WGPUTextureViewDimension_2D && _sampling_aspect(p_texture->wgpu_format) == WGPUTextureAspect_All) {
 			return p_texture->view;
 		}
 		WGPUTextureViewDescriptor view_desc = {};
@@ -2766,7 +2835,7 @@ uint64_t RenderingDeviceDriverWebGPU::api_trait_get(ApiTrait p_trait) {
 bool RenderingDeviceDriverWebGPU::has_feature(Features p_feature) {
 	switch (p_feature) {
 		case SUPPORTS_FRAGMENT_SHADER_WITH_ONLY_SIDE_EFFECTS:
-			return true;
+			return false; // A render pipeline needs a render target in WebGPU.
 		case SUPPORTS_HALF_FLOAT:
 			return wgpuDeviceHasFeature(device, WGPUFeatureName_ShaderF16);
 		default:

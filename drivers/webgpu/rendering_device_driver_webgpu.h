@@ -100,6 +100,8 @@ public:
 		// The overridable constants (specialization constants) each WGSL module declares. A stage rejects the ids it does not know.
 		LocalVector<uint32_t> override_ids[SHADER_STAGE_MAX];
 		bool has_override_ids[SHADER_STAGE_MAX] = {};
+		// The extras of the bindings by (set << 32 | binding), to adapt textures to the layout when a uniform set is created.
+		HashMap<uint64_t, RenderingShaderContainerWebGPU::BindingExtra> extras_by_binding;
 		uint32_t push_constant_size = 0;
 		// WGSL shaders keep push constants in a uniform buffer in group 0 (see command_bind_push_constants).
 		bool emulate_push_constants = false;
@@ -194,6 +196,9 @@ private:
 	void _ensure_compute_pass(CommandBufferInfo *p_cmd);
 	void _end_render_pass(CommandBufferInfo *p_cmd);
 	void _flush_group0(CommandBufferInfo *p_cmd, bool p_compute);
+	// The view to bind: the texture's own, or one with the dimension the shader layout expects (engines bind default
+	// textures of another kind, a cubemap for a 2D slot for example, which Vulkan tolerates).
+	WGPUTextureView _view_for_binding(const TextureInfo *p_texture, const ShaderInfo *p_shader, uint32_t p_set, uint32_t p_binding, LocalVector<WGPUTextureView> &r_temporary_views);
 	// Builds the constants of a pipeline stage; the keys stay valid as long as p_keys lives.
 	void _build_pipeline_constants(const ShaderInfo *p_shader, ShaderStage p_stage, VectorView<PipelineSpecializationConstant> p_specialization_constants, LocalVector<CharString> &p_keys, LocalVector<WGPUConstantEntry> &r_constants);
 	void _release_swap_chain_image(SwapChainInfo *p_swap_chain);

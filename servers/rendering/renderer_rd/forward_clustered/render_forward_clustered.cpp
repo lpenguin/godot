@@ -5209,6 +5209,11 @@ RenderForwardClustered::RenderForwardClustered() {
 
 		RD::TextureFormat tformat;
 		tformat.format = RD::DATA_FORMAT_R8_UNORM;
+#ifdef WEBGPU_ENABLED
+		if (webgpu) {
+			tformat.format = RD::DATA_FORMAT_R8G8B8A8_UNORM; // WebGPU has no r8 storage textures (the shader writes rgba8 there).
+		}
+#endif
 		tformat.width = 1024;
 		tformat.height = 1024;
 		tformat.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;

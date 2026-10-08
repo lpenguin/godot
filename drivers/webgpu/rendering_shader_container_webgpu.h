@@ -63,6 +63,11 @@ public:
 		uint32_t readable = 1;
 		uint32_t writable = 1;
 		uint32_t comparison = 0; // The sampler is a sampler_comparison (read from the WGSL; SPIR-V does not say).
+		// Godot names depth-like textures (depth_buffer, shadow_atlas, ...) and nearest samplers (SAMPLER_NEAREST_CLAMP) in a
+		// consistent way. WebGPU wants to know in advance that a texture may be a depth texture (unfilterable) and that a
+		// sampler pairs with it (non-filtering), so the layouts follow the names.
+		uint32_t depth_like = 0;
+		uint32_t nearest = 0;
 	};
 
 	Vector<BindingExtra> binding_extras;

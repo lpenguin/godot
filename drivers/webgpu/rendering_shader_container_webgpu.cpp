@@ -37,7 +37,7 @@
 #include "core/templates/hash_set.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
-const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 2;
+const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 3;
 
 namespace {
 
@@ -425,26 +425,46 @@ uint32_t _read_uint(const String &p_text, int p_from) {
 	return value;
 }
 
-struct CombinedSampler {
+// A resource of the shader as the reflection (and with it the uniform sets of the engine) knows it.
+struct NamedBinding {
 	String name;
 	uint32_t set = 0;
 	uint32_t binding = 0;
+	bool combined = false; // A sampler2D: Tint splits it into `name_image` and `name_sampler`.
 };
 
-void _annotate_from_wgsl(String &r_wgsl, const Vector<Vector3i> &p_uniform_keys, const Vector<CombinedSampler> &p_combined, Vector<RenderingShaderContainerWebGPU::BindingExtra> &r_extras) {
-	// Tint splits `sampler2D name` into a texture `name` and a sampler `name_sampler` at a binding of its own choosing
-	// (--sampler-mapping reads one digit only). The driver expects the sampler at binding + COMBINED_SAMPLER_BINDING_OFFSET.
+// Tint renumbers bindings: it splits combined samplers and then resolves binding conflicts, which can shift unrelated
+// resources. The engine creates its bind groups from the reflected bindings, so every global goes back to those
+// bindings; the sampler half of a combined binding goes to binding + COMBINED_SAMPLER_BINDING_OFFSET.
+void _annotate_from_wgsl(String &r_wgsl, const Vector<Vector3i> &p_uniform_keys, const Vector<NamedBinding> &p_named, Vector<RenderingShaderContainerWebGPU::BindingExtra> &r_extras) {
 	Vector<String> lines = r_wgsl.split("\n");
 	for (int i = 0; i < lines.size(); i++) {
 		String &line = lines.write[i];
 		if (!line.begins_with("@group(")) {
 			continue;
 		}
-		for (const CombinedSampler &combined : p_combined) {
-			if (line.contains("_sampler")) {
+		const int var_at = line.find(" var");
+		const int colon_at = line.find(" : ");
+		if (var_at < 0 || colon_at < 0) {
+			continue;
+		}
+		const int name_at = line.rfind(" ", colon_at - 1) + 1;
+		const String name = line.substr(name_at, colon_at - name_at);
+		const uint32_t group = _read_uint(line, 7);
+		for (const NamedBinding &named : p_named) {
+			if (named.set != group) {
+				continue;
 			}
-			if (line.contains(" var " + combined.name + "_sampler : sampler") && _read_uint(line, 7) == combined.set) {
-				line = vformat("@group(%du) @binding(%du)", combined.set, combined.binding + RenderingShaderContainerWebGPU::COMBINED_SAMPLER_BINDING_OFFSET) + line.substr(line.find(" var "));
+			int new_binding = -1;
+			if (named.name == name) {
+				new_binding = named.binding;
+			} else if (named.combined && name == named.name + "_image") {
+				new_binding = named.binding;
+			} else if (named.combined && name == named.name + "_sampler") {
+				new_binding = named.binding + RenderingShaderContainerWebGPU::COMBINED_SAMPLER_BINDING_OFFSET;
+			}
+			if (new_binding >= 0) {
+				line = vformat("@group(%du) @binding(%du)", group, new_binding) + line.substr(var_at);
 				break;
 			}
 		}
@@ -472,10 +492,7 @@ void _annotate_from_wgsl(String &r_wgsl, const Vector<Vector3i> &p_uniform_keys,
 				continue;
 			}
 			RenderingShaderContainerWebGPU::BindingExtra &extra = r_extras.write[p_uniform_keys[i].z];
-			if (type.begins_with("sampler")) {
-				extra.comparison = type == "sampler_comparison";
-			} else if (type.begins_with("texture_depth")) {
-				extra.depth = 1;
+			if (type.begins_with("texture_depth")) {
 				extra.multisampled = type.contains("multisampled");
 			} else if (type.begins_with("texture_multisampled")) {
 				extra.multisampled = 1;
@@ -517,20 +534,19 @@ bool RenderingShaderContainerWebGPU::_set_code_from_spirv(const ReflectShader &p
 #endif
 	_set_from_shader_reflection_post(p_shader); // Make sure binding_extras matches this reflection before it is annotated.
 #ifndef WEB_ENABLED
-	Vector<CombinedSampler> combined_samplers;
+	Vector<NamedBinding> named_bindings;
 	Vector<Vector3i> uniform_keys; // (set, binding, flat index into binding_extras).
 	{
 		int flat_index = 0;
 		for (uint32_t set = 0; set < p_shader.uniform_sets.size(); set++) {
 			for (const ReflectUniform &uniform : p_shader.uniform_sets[set]) {
 				uniform_keys.push_back(Vector3i(set, uniform.binding, flat_index++));
-				if (uniform.type == RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE) {
-					CombinedSampler combined;
-					combined.name = String::utf8(uniform.get_spv_reflect().name);
-					combined.set = set;
-					combined.binding = uniform.binding;
-					combined_samplers.push_back(combined);
-				}
+				NamedBinding named;
+				named.name = String::utf8(uniform.get_spv_reflect().name);
+				named.set = set;
+				named.binding = uniform.binding;
+				named.combined = uniform.type == RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+				named_bindings.push_back(named);
 			}
 		}
 	}
@@ -549,7 +565,7 @@ bool RenderingShaderContainerWebGPU::_set_code_from_spirv(const ReflectShader &p
 		if (!tint.is_empty()) {
 			String wgsl;
 			ERR_FAIL_COND_V(!_spirv_to_wgsl(tint, spirv, String::utf8(shader_name.get_data()), wgsl), false);
-			_annotate_from_wgsl(wgsl, uniform_keys, combined_samplers, binding_extras);
+			_annotate_from_wgsl(wgsl, uniform_keys, named_bindings, binding_extras);
 			const CharString utf8 = wgsl.utf8();
 			shader.code_compressed_bytes.resize(utf8.length());
 			memcpy(shader.code_compressed_bytes.ptrw(), utf8.get_data(), utf8.length());
@@ -575,6 +591,19 @@ void RenderingShaderContainerWebGPU::_set_from_shader_reflection_post(const Refl
 			extra.depth = spv.image.depth;
 			extra.readable = (spv.decoration_flags & SPV_REFLECT_DECORATION_NON_READABLE) ? 0 : 1;
 			extra.writable = (spv.decoration_flags & SPV_REFLECT_DECORATION_NON_WRITABLE) ? 0 : 1;
+			const String lower_name = String::utf8(spv.name).to_lower();
+			extra.depth_like = lower_name.contains("depth") || lower_name.contains("shadow");
+			extra.nearest = lower_name.contains("nearest") && !lower_name.contains("mipmaps"); // Nearest with mipmaps filters between mip levels.
+			// All variants of a shader have to give the same bind group layout, but Tint only knows that a texture is a depth
+			// texture when this variant samples it with a comparison. Shadow maps and comparison samplers follow their names
+			// (the 2D light shadows of the canvas are plain float textures, hence the `_texture` exception).
+			const bool shadow_named = lower_name.contains("shadow") && !lower_name.contains("_texture");
+			if (shadow_named && (uniform.type == RDC::UNIFORM_TYPE_TEXTURE || uniform.type == RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE)) {
+				extra.depth = 1;
+			}
+			if (shadow_named && (uniform.type == RDC::UNIFORM_TYPE_SAMPLER)) {
+				extra.comparison = 1;
+			}
 			binding_extras.push_back(extra);
 		}
 	}
