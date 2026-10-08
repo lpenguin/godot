@@ -298,7 +298,11 @@ void main() {
 	gl_Position = canvas_data.screen_transform * vec4(vertex, 0.0, 1.0);
 
 #ifdef USE_POINT_SIZE
+#ifdef WEBGPU
+	gl_PointSize = 1.0; // WGSL cannot set the point size.
+#else
 	gl_PointSize = point_size;
+#endif
 #endif
 }
 

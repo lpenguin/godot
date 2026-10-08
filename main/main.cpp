@@ -2607,6 +2607,9 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 #ifdef METAL_ENABLED
 			available_drivers.push_back("metal");
 #endif
+#ifdef WEBGPU_ENABLED
+			available_drivers.push_back("webgpu");
+#endif
 		}
 #ifdef GLES3_ENABLED
 		if (rendering_method == "gl_compatibility") {

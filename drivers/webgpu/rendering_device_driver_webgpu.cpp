@@ -36,6 +36,7 @@
 #include "core/io/file_access.h"
 #include "core/os/os.h"
 #include "core/string/print_string.h"
+#include "core/templates/pair.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
 namespace {
@@ -647,6 +648,7 @@ void RenderingDeviceDriverWebGPU::_wait_for(WGPUFuture p_future, const volatile 
 }
 
 Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t p_frame_count) {
+	frame_count = MAX(p_frame_count, 1u);
 	WGPUAdapter adapter = context_driver->adapter_get();
 	ERR_FAIL_NULL_V(adapter, ERR_CANT_CREATE);
 
@@ -725,6 +727,15 @@ RenderingDeviceDriver::BufferID RenderingDeviceDriverWebGPU::buffer_create(uint6
 	info->size = _align_up(p_size, 4);
 	info->usage = p_usage;
 	info->cpu = p_allocation_type == MEMORY_ALLOCATION_TYPE_CPU;
+	info->dynamic = p_usage.has_flag(BUFFER_USAGE_DYNAMIC_PERSISTENT_BIT);
+	if (info->dynamic) {
+		// Dynamic offsets have to respect the offset alignment of uniform and storage bindings.
+		info->size = _align_up(p_size, 256);
+		info->total_size = info->size * frame_count;
+		info->shadow.resize(info->total_size);
+		memset(info->shadow.ptrw(), 0, info->total_size);
+		info->cpu = false;
+	}
 
 	WGPUBufferUsage usage = 0;
 	if (info->cpu) {
@@ -753,13 +764,13 @@ RenderingDeviceDriver::BufferID RenderingDeviceDriverWebGPU::buffer_create(uint6
 
 	WGPUBufferDescriptor desc = {};
 	desc.usage = usage;
-	desc.size = info->size;
+	desc.size = info->dynamic ? info->total_size : info->size;
 	info->buffer = wgpuDeviceCreateBuffer(device, &desc);
 	if (!info->buffer) {
 		memdelete(info);
 		return BufferID();
 	}
-	total_memory_used += info->size;
+	total_memory_used += info->dynamic ? info->total_size : info->size;
 	return BufferID(info);
 }
 
@@ -769,14 +780,15 @@ bool RenderingDeviceDriverWebGPU::buffer_set_texel_format(BufferID p_buffer, Dat
 
 void RenderingDeviceDriverWebGPU::buffer_free(BufferID p_buffer) {
 	BufferInfo *info = (BufferInfo *)p_buffer.id;
-	total_memory_used -= info->size;
+	total_memory_used -= info->dynamic ? info->total_size : info->size;
 	wgpuBufferDestroy(info->buffer);
 	wgpuBufferRelease(info->buffer);
 	memdelete(info);
 }
 
 uint64_t RenderingDeviceDriverWebGPU::buffer_get_allocation_size(BufferID p_buffer) {
-	return ((const BufferInfo *)p_buffer.id)->size;
+	const BufferInfo *info = (const BufferInfo *)p_buffer.id;
+	return info->dynamic ? info->total_size : info->size;
 }
 
 bool RenderingDeviceDriverWebGPU::_map_for_read(BufferInfo *p_buffer) {
@@ -797,6 +809,7 @@ bool RenderingDeviceDriverWebGPU::_map_for_read(BufferInfo *p_buffer) {
 
 uint8_t *RenderingDeviceDriverWebGPU::buffer_map(BufferID p_buffer) {
 	BufferInfo *info = (BufferInfo *)p_buffer.id;
+	ERR_FAIL_COND_V_MSG(info->dynamic, nullptr, "WebGPU driver: dynamic buffers use buffer_persistent_map_advance().");
 	ERR_FAIL_COND_V_MSG(!info->cpu, nullptr, "WebGPU driver: only CPU buffers can be mapped.");
 	if (info->download && info->gpu_written) {
 		ERR_FAIL_COND_V(!_map_for_read(info), nullptr);
@@ -810,11 +823,34 @@ void RenderingDeviceDriverWebGPU::buffer_unmap(BufferID p_buffer) {
 }
 
 uint8_t *RenderingDeviceDriverWebGPU::buffer_persistent_map_advance(BufferID p_buffer, uint64_t p_frames_drawn) {
-	WGPU_UNIMPLEMENTED(nullptr);
+	BufferInfo *info = (BufferInfo *)p_buffer.id;
+	ERR_FAIL_COND_V_MSG(!info->dynamic, nullptr, "WebGPU driver: the buffer is not dynamic; use buffer_map().");
+	info->frame_idx = (info->frame_idx + 1u) % frame_count;
+	return info->shadow.ptrw() + info->frame_idx * info->size;
+}
+
+void RenderingDeviceDriverWebGPU::buffer_flush(BufferID p_buffer) {
+	BufferInfo *info = (BufferInfo *)p_buffer.id;
+	if (!info->dynamic) {
+		return;
+	}
+	// The write is ordered on the queue before the next submit, and every frame in flight has its own region.
+	const uint64_t offset = (uint64_t)info->frame_idx * info->size;
+	wgpuQueueWriteBuffer(queue, info->buffer, offset, info->shadow.ptr() + offset, info->size);
 }
 
 uint64_t RenderingDeviceDriverWebGPU::buffer_get_dynamic_offsets(Span<BufferID> p_buffers) {
-	return 0;
+	uint64_t mask = 0;
+	uint64_t shift = 0;
+	for (const BufferID &buffer : p_buffers) {
+		const BufferInfo *info = (const BufferInfo *)buffer.id;
+		if (!info->dynamic) {
+			continue;
+		}
+		mask |= (uint64_t)info->frame_idx << shift;
+		shift += 2; // The frame index fits 2 bits, there are at most 4 frames in flight.
+	}
+	return mask;
 }
 
 uint64_t RenderingDeviceDriverWebGPU::buffer_get_device_address(BufferID p_buffer) {
@@ -1298,11 +1334,16 @@ void RenderingDeviceDriverWebGPU::_flush_group0(CommandBufferInfo *p_cmd, bool p
 	}
 	WGPUBindGroup group = p_cmd->group0 ? p_cmd->group0 : p_cmd->shader->default_group0;
 	ERR_FAIL_NULL(group);
-	const uint32_t offset = p_cmd->push_offset;
+	// Dynamic offsets are ordered by binding number; the push constant ring has the highest binding.
+	LocalVector<uint32_t> offsets;
+	if (p_cmd->group0) {
+		offsets = p_cmd->group0_dynamic_offsets;
+	}
+	offsets.push_back(p_cmd->push_offset);
 	if (p_compute) {
-		wgpuComputePassEncoderSetBindGroup(p_cmd->compute_pass, 0, group, 1, &offset);
+		wgpuComputePassEncoderSetBindGroup(p_cmd->compute_pass, 0, group, offsets.size(), offsets.ptr());
 	} else {
-		wgpuRenderPassEncoderSetBindGroup(p_cmd->render_pass, 0, group, 1, &offset);
+		wgpuRenderPassEncoderSetBindGroup(p_cmd->render_pass, 0, group, offsets.size(), offsets.ptr());
 	}
 	p_cmd->group0_dirty = false;
 }
@@ -1555,6 +1596,17 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 		WGPUShaderSourceSPIRV spirv = {};
 #endif
 		if (is_wgsl) {
+			const String wgsl_text = String::utf8((const char *)shader.code_compressed_bytes.ptr(), shader.code_compressed_bytes.size());
+			info->has_override_ids[shader.shader_stage] = true;
+			int at = 0;
+			while ((at = wgsl_text.find("@id(", at)) >= 0) {
+				uint32_t id = 0;
+				for (int k = at + 4; k < wgsl_text.length() && wgsl_text[k] >= '0' && wgsl_text[k] <= '9'; k++) {
+					id = id * 10 + (wgsl_text[k] - '0');
+				}
+				info->override_ids[shader.shader_stage].push_back(id);
+				at += 4;
+			}
 			wgsl_source.chain.sType = WGPUSType_ShaderSourceWGSL;
 			wgsl_source.code.data = (const char *)shader.code_compressed_bytes.ptr();
 			wgsl_source.code.length = shader.code_compressed_bytes.size();
@@ -1601,10 +1653,14 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 
 				switch (uniform.type) {
 					case UNIFORM_TYPE_UNIFORM_BUFFER:
+					case UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC:
 						entry.buffer.type = WGPUBufferBindingType_Uniform;
+						entry.buffer.hasDynamicOffset = uniform.type == UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC;
 						break;
 					case UNIFORM_TYPE_STORAGE_BUFFER:
+					case UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC:
 						entry.buffer.type = uniform.writable ? WGPUBufferBindingType_Storage : WGPUBufferBindingType_ReadOnlyStorage;
+						entry.buffer.hasDynamicOffset = uniform.type == UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC;
 						break;
 					case UNIFORM_TYPE_IMAGE: {
 						entry.storageTexture.format = _spv_image_format_to_wgpu(extra.image_format);
@@ -1622,12 +1678,23 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 						}
 					} break;
 					case UNIFORM_TYPE_TEXTURE:
+					case UNIFORM_TYPE_SAMPLER_WITH_TEXTURE:
 						entry.texture.sampleType = extra.depth ? WGPUTextureSampleType_Depth : (extra.numeric == 1 ? WGPUTextureSampleType_Sint : (extra.numeric == 2 ? WGPUTextureSampleType_Uint : WGPUTextureSampleType_Float));
 						entry.texture.viewDimension = _spv_dim_to_view_dimension(extra.dim, extra.arrayed);
 						entry.texture.multisampled = extra.multisampled;
+						if (uniform.type == UNIFORM_TYPE_SAMPLER_WITH_TEXTURE) {
+							// The sampler half of the combined binding gets its own entry (see COMBINED_SAMPLER_BINDING_OFFSET).
+							WGPUBindGroupLayoutEntry texture_entry = entry;
+							WGPUBindGroupLayoutEntry sampler_entry = {};
+							sampler_entry.binding = uniform.binding + RenderingShaderContainerWebGPU::COMBINED_SAMPLER_BINDING_OFFSET;
+							sampler_entry.visibility = entry.visibility;
+							sampler_entry.sampler.type = extra.comparison ? WGPUSamplerBindingType_Comparison : WGPUSamplerBindingType_Filtering;
+							entries.push_back(texture_entry);
+							entry = sampler_entry;
+						}
 						break;
 					case UNIFORM_TYPE_SAMPLER:
-						entry.sampler.type = WGPUSamplerBindingType_Filtering;
+						entry.sampler.type = extra.comparison ? WGPUSamplerBindingType_Comparison : WGPUSamplerBindingType_Filtering;
 						break;
 					default:
 						ERR_PRINT(vformat("WebGPU driver: uniform type %d is not supported yet (shader '%s').", (int)uniform.type, info->name));
@@ -1635,6 +1702,9 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 						break;
 				}
 				entries.push_back(entry);
+			}
+			if (failed) {
+				break; // An invalid entry would make the layout creation panic inside wgpu-native.
 			}
 			if (set == 0 && info->emulate_push_constants) {
 				entries.push_back(_push_constant_layout_entry());
@@ -1727,18 +1797,24 @@ RenderingDeviceDriver::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_cre
 
 	LocalVector<WGPUBindGroupEntry> entries;
 	LocalVector<WGPUTextureView> temporary_views;
+	LocalVector<Pair<uint32_t, const BufferInfo *>> dynamic_buffers;
 	for (uint32_t i = 0; i < p_uniforms.size(); i++) {
 		const BoundUniform &uniform = p_uniforms[i];
-		ERR_FAIL_COND_V_MSG(uniform.ids.size() != 1, UniformSetID(), "WebGPU driver: uniform arrays are not supported.");
+		ERR_FAIL_COND_V_MSG(uniform.ids.size() != (uniform.type == UNIFORM_TYPE_SAMPLER_WITH_TEXTURE ? 2 : 1), UniformSetID(), "WebGPU driver: uniform arrays are not supported.");
 		WGPUBindGroupEntry entry = {};
 		entry.binding = uniform.binding;
 		switch (uniform.type) {
 			case UNIFORM_TYPE_UNIFORM_BUFFER:
-			case UNIFORM_TYPE_STORAGE_BUFFER: {
+			case UNIFORM_TYPE_STORAGE_BUFFER:
+			case UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC:
+			case UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC: {
 				const BufferInfo *buffer = (const BufferInfo *)uniform.ids[0].id;
 				entry.buffer = buffer->buffer;
 				entry.offset = 0;
-				entry.size = buffer->size;
+				entry.size = buffer->size; // One frame's region for dynamic buffers.
+				if (uniform.type == UNIFORM_TYPE_UNIFORM_BUFFER_DYNAMIC || uniform.type == UNIFORM_TYPE_STORAGE_BUFFER_DYNAMIC) {
+					dynamic_buffers.push_back(Pair<uint32_t, const BufferInfo *>(uniform.binding, buffer));
+				}
 			} break;
 			case UNIFORM_TYPE_IMAGE: {
 				const TextureInfo *texture = (const TextureInfo *)uniform.ids[0].id;
@@ -1763,6 +1839,17 @@ RenderingDeviceDriver::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_cre
 			case UNIFORM_TYPE_TEXTURE: {
 				const TextureInfo *texture = (const TextureInfo *)uniform.ids[0].id;
 				entry.textureView = texture->view;
+			} break;
+			case UNIFORM_TYPE_SAMPLER_WITH_TEXTURE: {
+				// ids: the sampler first, then the texture.
+				const SamplerInfo *sampler = (const SamplerInfo *)uniform.ids[0].id;
+				const TextureInfo *texture = (const TextureInfo *)uniform.ids[1].id;
+				entry.textureView = texture->view;
+				WGPUBindGroupEntry sampler_entry = {};
+				sampler_entry.binding = uniform.binding + RenderingShaderContainerWebGPU::COMBINED_SAMPLER_BINDING_OFFSET;
+				sampler_entry.sampler = sampler->sampler;
+				entries.push_back(entry);
+				entry = sampler_entry;
 			} break;
 			case UNIFORM_TYPE_SAMPLER: {
 				const SamplerInfo *sampler = (const SamplerInfo *)uniform.ids[0].id;
@@ -1794,6 +1881,10 @@ RenderingDeviceDriver::UniformSetID RenderingDeviceDriverWebGPU::uniform_set_cre
 
 	UniformSetInfo *info = memnew(UniformSetInfo);
 	info->bind_group = bind_group;
+	dynamic_buffers.sort_custom<PairSort<uint32_t, const BufferInfo *>>();
+	for (const Pair<uint32_t, const BufferInfo *> &dynamic_buffer : dynamic_buffers) {
+		info->dynamic_buffers.push_back(dynamic_buffer.second);
+	}
 	return UniformSetID(info);
 }
 
@@ -1804,7 +1895,16 @@ void RenderingDeviceDriverWebGPU::uniform_set_free(UniformSetID p_uniform_set) {
 }
 
 uint32_t RenderingDeviceDriverWebGPU::uniform_sets_get_dynamic_offsets(VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count) const {
-	return 0;
+	uint32_t mask = 0;
+	uint32_t shift = 0;
+	for (uint32_t i = 0; i < p_set_count; i++) {
+		const UniformSetInfo *set = (const UniformSetInfo *)p_uniform_sets[i].id;
+		for (const BufferInfo *buffer : set->dynamic_buffers) {
+			mask |= buffer->frame_idx << shift;
+			shift += 4;
+		}
+	}
+	return mask;
 }
 
 void RenderingDeviceDriverWebGPU::command_uniform_set_prepare_for_use(CommandBufferID p_cmd_buffer, UniformSetID p_uniform_set, ShaderID p_shader, uint32_t p_set_index) {
@@ -2128,15 +2228,22 @@ void RenderingDeviceDriverWebGPU::command_bind_render_pipeline(CommandBufferID p
 void RenderingDeviceDriverWebGPU::command_bind_render_uniform_sets(CommandBufferID p_cmd_buffer, VectorView<UniformSetID> p_uniform_sets, ShaderID p_shader, uint32_t p_first_set_index, uint32_t p_set_count, uint32_t p_dynamic_offsets) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	const ShaderInfo *shader = (const ShaderInfo *)p_shader.id;
+	uint32_t shift = 0;
 	for (uint32_t i = 0; i < p_set_count; i++) {
 		const UniformSetInfo *set = (const UniformSetInfo *)p_uniform_sets[i].id;
+		LocalVector<uint32_t> offsets;
+		for (const BufferInfo *buffer : set->dynamic_buffers) {
+			offsets.push_back(uint32_t(((p_dynamic_offsets >> shift) & 0xFu) * buffer->size));
+			shift += 4;
+		}
 		if (p_first_set_index + i == 0 && shader->emulate_push_constants) {
 			cmd->group0 = set->bind_group;
+			cmd->group0_dynamic_offsets = offsets;
 			cmd->shader = shader;
 			cmd->group0_dirty = true;
 			continue;
 		}
-		wgpuRenderPassEncoderSetBindGroup(cmd->render_pass, p_first_set_index + i, set->bind_group, 0, nullptr);
+		wgpuRenderPassEncoderSetBindGroup(cmd->render_pass, p_first_set_index + i, set->bind_group, offsets.size(), offsets.ptr());
 	}
 }
 
@@ -2182,7 +2289,12 @@ void RenderingDeviceDriverWebGPU::command_render_bind_vertex_buffers(CommandBuff
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	for (uint32_t i = 0; i < p_binding_count; i++) {
 		const BufferInfo *buffer = (const BufferInfo *)p_buffers[i].id;
-		wgpuRenderPassEncoderSetVertexBuffer(cmd->render_pass, i, buffer->buffer, p_offsets[i], WGPU_WHOLE_SIZE);
+		uint64_t offset = p_offsets[i];
+		if (buffer->dynamic) {
+			offset += (p_dynamic_offsets & 0x3) * buffer->size;
+			p_dynamic_offsets >>= 2;
+		}
+		wgpuRenderPassEncoderSetVertexBuffer(cmd->render_pass, i, buffer->buffer, offset, WGPU_WHOLE_SIZE);
 	}
 }
 
@@ -2207,13 +2319,21 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_c
 	const RenderPassInfo *pass = (const RenderPassInfo *)p_render_pass.id;
 	ERR_FAIL_NULL_V(shader->modules[SHADER_STAGE_VERTEX], PipelineID());
 	ERR_FAIL_COND_V(p_render_subpass != 0 || pass->subpasses.is_empty(), PipelineID());
-	ERR_FAIL_COND_V_MSG(p_specialization_constants.size() > 0, PipelineID(), "WebGPU driver: specialization constants are not supported for render pipelines yet.");
 	const Subpass &subpass = pass->subpasses[0];
 
+	LocalVector<CharString> vertex_keys, fragment_keys;
+	LocalVector<WGPUConstantEntry> vertex_constants, fragment_constants;
+	_build_pipeline_constants(shader, SHADER_STAGE_VERTEX, p_specialization_constants, vertex_keys, vertex_constants);
+	_build_pipeline_constants(shader, SHADER_STAGE_FRAGMENT, p_specialization_constants, fragment_keys, fragment_constants);
+
+	const CharString shader_label = shader->name.utf8();
 	WGPURenderPipelineDescriptor desc = {};
+	desc.label = _sv(shader_label.get_data());
 	desc.layout = shader->pipeline_layout;
 	desc.vertex.module = shader->modules[SHADER_STAGE_VERTEX];
 	desc.vertex.entryPoint = _sv("main");
+	desc.vertex.constantCount = vertex_constants.size();
+	desc.vertex.constants = vertex_constants.ptr();
 	if (p_vertex_format) {
 		const VertexFormatInfo *vertex_format = (const VertexFormatInfo *)p_vertex_format.id;
 		desc.vertex.bufferCount = vertex_format->layouts.size();
@@ -2311,6 +2431,8 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_c
 	if (shader->modules[SHADER_STAGE_FRAGMENT]) {
 		fragment.module = shader->modules[SHADER_STAGE_FRAGMENT];
 		fragment.entryPoint = _sv("main");
+		fragment.constantCount = fragment_constants.size();
+		fragment.constants = fragment_constants.ptr();
 		fragment.targetCount = targets.size();
 		fragment.targets = targets.ptr();
 		desc.fragment = &fragment;
@@ -2341,15 +2463,22 @@ void RenderingDeviceDriverWebGPU::command_bind_compute_uniform_sets(CommandBuffe
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	_ensure_compute_pass(cmd);
 	const ShaderInfo *shader = (const ShaderInfo *)p_shader.id;
+	uint32_t shift = 0;
 	for (uint32_t i = 0; i < p_set_count; i++) {
 		const UniformSetInfo *set = (const UniformSetInfo *)p_uniform_sets[i].id;
+		LocalVector<uint32_t> offsets;
+		for (const BufferInfo *buffer : set->dynamic_buffers) {
+			offsets.push_back(uint32_t(((p_dynamic_offsets >> shift) & 0xFu) * buffer->size));
+			shift += 4;
+		}
 		if (p_first_set_index + i == 0 && shader->emulate_push_constants) {
 			cmd->group0 = set->bind_group;
+			cmd->group0_dynamic_offsets = offsets;
 			cmd->shader = shader;
 			cmd->group0_dirty = true;
 			continue;
 		}
-		wgpuComputePassEncoderSetBindGroup(cmd->compute_pass, p_first_set_index + i, set->bind_group, 0, nullptr);
+		wgpuComputePassEncoderSetBindGroup(cmd->compute_pass, p_first_set_index + i, set->bind_group, offsets.size(), offsets.ptr());
 	}
 }
 
@@ -2368,19 +2497,17 @@ void RenderingDeviceDriverWebGPU::command_compute_dispatch_indirect(CommandBuffe
 	wgpuComputePassEncoderDispatchWorkgroupsIndirect(cmd->compute_pass, buffer->buffer, p_offset);
 }
 
-RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::compute_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants) {
-	ShaderInfo *shader = (ShaderInfo *)p_shader.id;
-	ERR_FAIL_NULL_V(shader->modules[SHADER_STAGE_COMPUTE], PipelineID());
-
+void RenderingDeviceDriverWebGPU::_build_pipeline_constants(const ShaderInfo *p_shader, ShaderStage p_stage, VectorView<PipelineSpecializationConstant> p_specialization_constants, LocalVector<CharString> &p_keys, LocalVector<WGPUConstantEntry> &r_constants) {
 	// Specialization constants become pipeline-overridable constants, keyed by their SPIR-V id.
-	LocalVector<CharString> keys;
-	LocalVector<WGPUConstantEntry> constants;
-	keys.resize(p_specialization_constants.size());
+	p_keys.reserve(p_specialization_constants.size());
 	for (uint32_t i = 0; i < p_specialization_constants.size(); i++) {
 		const PipelineSpecializationConstant &constant = p_specialization_constants[i];
-		keys[i] = itos(constant.constant_id).utf8();
+		if (p_shader->has_override_ids[p_stage] && !p_shader->override_ids[p_stage].has(constant.constant_id)) {
+			continue; // Tint drops overrides the stage does not use.
+		}
+		p_keys.push_back(itos(constant.constant_id).utf8());
 		WGPUConstantEntry entry = {};
-		entry.key = _sv(keys[i].get_data());
+		entry.key = _sv(p_keys[p_keys.size() - 1].get_data());
 		switch (constant.type) {
 			case PIPELINE_SPECIALIZATION_CONSTANT_TYPE_BOOL:
 				entry.value = constant.bool_value ? 1.0 : 0.0;
@@ -2392,10 +2519,21 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::compute_pipeline_
 				entry.value = (double)constant.float_value;
 				break;
 		}
-		constants.push_back(entry);
+		r_constants.push_back(entry);
 	}
+}
 
+RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::compute_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants) {
+	ShaderInfo *shader = (ShaderInfo *)p_shader.id;
+	ERR_FAIL_NULL_V(shader->modules[SHADER_STAGE_COMPUTE], PipelineID());
+
+	LocalVector<CharString> keys;
+	LocalVector<WGPUConstantEntry> constants;
+	_build_pipeline_constants(shader, SHADER_STAGE_COMPUTE, p_specialization_constants, keys, constants);
+
+	const CharString shader_label = shader->name.utf8();
 	WGPUComputePipelineDescriptor desc = {};
+	desc.label = _sv(shader_label.get_data());
 	desc.layout = shader->pipeline_layout;
 	desc.compute.module = shader->modules[SHADER_STAGE_COMPUTE];
 	desc.compute.entryPoint = _sv("main");

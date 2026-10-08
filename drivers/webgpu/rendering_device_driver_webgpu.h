@@ -54,6 +54,11 @@ public:
 		bool download = false;
 		bool gpu_written = false;
 		Vector<uint8_t> shadow;
+		// BUFFER_USAGE_DYNAMIC_PERSISTENT_BIT: `frame_count` regions of `size` bytes each, one per frame in flight. The
+		// shadow holds all regions; buffer_flush() uploads the current one.
+		bool dynamic = false;
+		uint32_t frame_idx = 0;
+		uint64_t total_size = 0;
 	};
 
 	struct TextureInfo {
@@ -92,6 +97,9 @@ public:
 		LocalVector<WGPUBindGroupLayout> set_layouts;
 		WGPUPipelineLayout pipeline_layout = nullptr;
 		WGPUShaderModule modules[SHADER_STAGE_MAX] = {};
+		// The overridable constants (specialization constants) each WGSL module declares. A stage rejects the ids it does not know.
+		LocalVector<uint32_t> override_ids[SHADER_STAGE_MAX];
+		bool has_override_ids[SHADER_STAGE_MAX] = {};
 		uint32_t push_constant_size = 0;
 		// WGSL shaders keep push constants in a uniform buffer in group 0 (see command_bind_push_constants).
 		bool emulate_push_constants = false;
@@ -100,6 +108,7 @@ public:
 
 	struct UniformSetInfo {
 		WGPUBindGroup bind_group = nullptr;
+		LocalVector<const BufferInfo *> dynamic_buffers; // Ordered by binding, like the dynamic offsets of WebGPU.
 	};
 
 	struct PipelineInfo {
@@ -158,6 +167,7 @@ public:
 		WGPUBindGroup group0 = nullptr;
 		uint32_t push_offset = 0;
 		bool group0_dirty = false;
+		LocalVector<uint32_t> group0_dynamic_offsets; // Offsets of the dynamic buffers of set 0, then the push constant slot.
 		uint8_t push_shadow[RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE] = {};
 	};
 
@@ -167,6 +177,7 @@ private:
 	WGPUQueue queue = nullptr;
 	WGPULimits limits = {};
 	bool immediates_supported = false;
+	uint32_t frame_count = 1;
 	WGPUBuffer push_constant_ring = nullptr;
 	uint32_t push_constant_next_slot = 0;
 	static constexpr uint32_t PUSH_CONSTANT_SLOTS = 16384;
@@ -183,6 +194,8 @@ private:
 	void _ensure_compute_pass(CommandBufferInfo *p_cmd);
 	void _end_render_pass(CommandBufferInfo *p_cmd);
 	void _flush_group0(CommandBufferInfo *p_cmd, bool p_compute);
+	// Builds the constants of a pipeline stage; the keys stay valid as long as p_keys lives.
+	void _build_pipeline_constants(const ShaderInfo *p_shader, ShaderStage p_stage, VectorView<PipelineSpecializationConstant> p_specialization_constants, LocalVector<CharString> &p_keys, LocalVector<WGPUConstantEntry> &r_constants);
 	void _release_swap_chain_image(SwapChainInfo *p_swap_chain);
 	bool _map_for_read(BufferInfo *p_buffer);
 
@@ -190,7 +203,7 @@ public:
 	WGPUDevice device_get() const { return device; }
 
 	virtual uint64_t api_trait_get(ApiTrait p_trait) override;
-	virtual void buffer_flush(BufferID p_buffer) override {}
+	virtual void buffer_flush(BufferID p_buffer) override;
 	virtual uint32_t shader_get_layout_hash(ShaderID p_shader) override { return 0; }
 
 	virtual Error initialize(uint32_t p_device_index, uint32_t p_frame_count) override;

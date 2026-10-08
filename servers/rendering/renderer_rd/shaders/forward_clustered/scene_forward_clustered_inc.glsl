@@ -304,9 +304,13 @@ layout(set = 0, binding = 16) uniform texture2D best_fit_normal_texture;
 
 layout(set = 0, binding = 17) uniform texture2D dfg;
 
+#ifndef WEBGPU // Combined samplers do not exist in WGSL; area lights are compiled out there.
 layout(set = 0, binding = 18) uniform sampler2D ltc_lut1;
+#endif
 
+#ifndef WEBGPU // Combined samplers do not exist in WGSL; area lights are compiled out there.
 layout(set = 0, binding = 19) uniform sampler2D ltc_lut2;
+#endif
 
 layout(set = 0, binding = 20) uniform texture2D area_light_atlas;
 /* Set 1: Render Pass (changes per render pass) */

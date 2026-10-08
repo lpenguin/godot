@@ -45,7 +45,9 @@ layout(push_constant, std430) uniform Params {
 	mat3x4 inv_projection;
 	// We pack these more tightly than mat3 and vec3, which will require some reconstruction trickery.
 	float cam_basis[3][3];
-	float cam_origin[3];
+	float cam_origin0;
+	float cam_origin1;
+	float cam_origin2;
 }
 params;
 
@@ -79,7 +81,7 @@ void main() {
 	vec3 ray_pos;
 	vec3 ray_dir;
 	{
-		ray_pos = vec3(params.cam_origin[0], params.cam_origin[1], params.cam_origin[2]);
+		ray_pos = vec3(params.cam_origin0, params.cam_origin1, params.cam_origin2);
 
 		ray_dir.xy = ((vec2(screen_pos) / vec2(params.screen_size)) * 2.0 - 1.0);
 		ray_dir.z = params.z_near;

@@ -49,6 +49,8 @@ public:
 	// dynamic offset, see RenderingDeviceDriverWebGPU::command_bind_push_constants().
 	static const uint32_t PUSH_CONSTANT_BINDING = 900;
 	static const uint32_t PUSH_CONSTANT_SLOT_SIZE = 256; // Also the minimum uniform buffer offset alignment.
+	// WGSL has no combined texture/sampler: a `sampler2D` at binding N becomes a texture at N and a sampler at N + 500.
+	static const uint32_t COMBINED_SAMPLER_BINDING_OFFSET = 500;
 
 	// Per-binding information that WebGPU bind group layouts need and the generic reflection does not carry.
 	struct BindingExtra {
@@ -60,6 +62,7 @@ public:
 		uint32_t numeric = 0; // 0: float, 1: signed int, 2: unsigned int.
 		uint32_t readable = 1;
 		uint32_t writable = 1;
+		uint32_t comparison = 0; // The sampler is a sampler_comparison (read from the WGSL; SPIR-V does not say).
 	};
 
 	Vector<BindingExtra> binding_extras;

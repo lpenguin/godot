@@ -3348,6 +3348,9 @@ void RenderForwardClustered::_update_render_base_uniform_set() {
 			}
 		}
 
+#ifdef WEBGPU_ENABLED
+		if (!webgpu)
+#endif
 		{
 			RD::Uniform u;
 			u.binding = 18;
@@ -3357,6 +3360,9 @@ void RenderForwardClustered::_update_render_base_uniform_set() {
 			uniforms.push_back(u);
 		}
 
+#ifdef WEBGPU_ENABLED
+		if (!webgpu)
+#endif
 		{
 			RD::Uniform u;
 			u.binding = 19;
@@ -5135,11 +5141,6 @@ RenderForwardClustered::RenderForwardClustered() {
 
 	{
 		String defines;
-#ifdef WEBGPU_ENABLED
-		if (webgpu) {
-			defines += "\n#define WEBGPU\n";
-		}
-#endif
 		defines += "\n#define MAX_ROUGHNESS_LOD " + itos(get_roughness_layers() - 1) + ".0\n";
 		if (is_using_radiance_octmap_array()) {
 			defines += "\n#define USE_RADIANCE_OCTMAP_ARRAY \n";

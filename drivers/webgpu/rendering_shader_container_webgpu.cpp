@@ -37,7 +37,7 @@
 #include "core/templates/hash_set.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
-const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 1;
+const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 2;
 
 namespace {
 
@@ -100,6 +100,57 @@ Vector<uint8_t> _strip_buffer_non_readable(const Vector<uint8_t> &p_spirv) {
 	return result;
 }
 
+
+// Tint does not read some instructions that WGSL cannot express:
+// * OpMemoryBarrier (GLSL memoryBarrierShared(), groupMemoryBarrier()). Godot always pairs it with barrier(), and the
+//   OpControlBarrier that follows already carries the workgroup memory semantics, which becomes workgroupBarrier().
+// * OpIsNan and OpIsInf: WGSL has no NaN or infinity. They become a comparison that is always false (same result type).
+Vector<uint8_t> _lower_unsupported_instructions(const Vector<uint8_t> &p_spirv) {
+	constexpr uint32_t OP_IS_NAN = 156;
+	constexpr uint32_t OP_IS_INF = 157;
+	constexpr uint32_t OP_F_ORD_LESS_THAN = 184;
+	constexpr uint32_t OP_MEMORY_BARRIER = 225;
+
+	const uint32_t word_count = p_spirv.size() / 4;
+	const uint32_t *words = (const uint32_t *)p_spirv.ptr();
+	if (word_count < 5) {
+		return p_spirv;
+	}
+	Vector<uint8_t> result;
+	result.resize(p_spirv.size() + p_spirv.size() / 8 + 64); // Room for the comparisons, which are one word longer.
+	uint32_t *out = (uint32_t *)result.ptrw();
+	memcpy(out, words, 5 * sizeof(uint32_t));
+	uint32_t out_count = 5;
+	bool changed = false;
+	for (uint32_t i = 5; i < word_count;) {
+		const uint32_t length = words[i] >> 16;
+		const uint32_t opcode = words[i] & 0xFFFF;
+		if (length == 0 || i + length > word_count) {
+			return p_spirv;
+		}
+		if (opcode == OP_MEMORY_BARRIER) {
+			changed = true;
+		} else if ((opcode == OP_IS_NAN || opcode == OP_IS_INF) && length == 4) {
+			ERR_FAIL_COND_V((out_count + 5) * sizeof(uint32_t) > (uint32_t)result.size(), p_spirv);
+			out[out_count++] = (5u << 16) | OP_F_ORD_LESS_THAN;
+			out[out_count++] = words[i + 1]; // Result type.
+			out[out_count++] = words[i + 2]; // Result id.
+			out[out_count++] = words[i + 3];
+			out[out_count++] = words[i + 3];
+			changed = true;
+		} else {
+			ERR_FAIL_COND_V((out_count + length) * sizeof(uint32_t) > (uint32_t)result.size(), p_spirv);
+			memcpy(out + out_count, words + i, length * sizeof(uint32_t));
+			out_count += length;
+		}
+		i += length;
+	}
+	if (!changed) {
+		return p_spirv;
+	}
+	result.resize(out_count * sizeof(uint32_t));
+	return result;
+}
 
 // Vulkan clip space has Y pointing down, WebGPU (like D3D12 and Metal) has it pointing up. Godot's shaders follow the
 // Vulkan convention, so, like the D3D12 driver does, negate gl_Position.y before every return of the vertex entry point.
@@ -338,6 +389,10 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 	// it writes, and the browser validates that WGSL again.
 	arguments.push_back("--disable-ir-validation-asserts");
 	arguments.push_back("true");
+	// Godot's shaders sample textures with implicit derivatives from non-uniform control flow, like GLSL allows. This adds
+	// `diagnostic(off, derivative_uniformity)` to the WGSL, which browsers accept.
+	arguments.push_back("--allow-non-uniform-derivatives");
+	arguments.push_back("true");
 	arguments.push_back("--format");
 	arguments.push_back("wgsl");
 	arguments.push_back("-o");
@@ -354,6 +409,87 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 	// No browser supports `var<immediate>` yet: push constants become a uniform buffer in group 0 (see the driver).
 	r_wgsl = r_wgsl.replace("var<immediate> ", vformat("@group(0) @binding(%d) var<uniform> ", RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING));
 	return !r_wgsl.is_empty();
+}
+#endif
+
+#ifndef WEB_ENABLED
+// Reads the global declarations of the WGSL that Tint wrote: `@group(0u) @binding(2u) var name : sampler_comparison;`.
+// Tint turns textures that are sampled with a comparison sampler into depth textures, which the SPIR-V reflection does
+// not see, so the bind group layouts take these facts from the WGSL.
+// Reads the unsigned number that starts at p_from ("0u)" -> 0, "505u)" -> 505).
+uint32_t _read_uint(const String &p_text, int p_from) {
+	uint32_t value = 0;
+	for (int i = p_from; i < p_text.length() && p_text[i] >= '0' && p_text[i] <= '9'; i++) {
+		value = value * 10 + (p_text[i] - '0');
+	}
+	return value;
+}
+
+struct CombinedSampler {
+	String name;
+	uint32_t set = 0;
+	uint32_t binding = 0;
+};
+
+void _annotate_from_wgsl(String &r_wgsl, const Vector<Vector3i> &p_uniform_keys, const Vector<CombinedSampler> &p_combined, Vector<RenderingShaderContainerWebGPU::BindingExtra> &r_extras) {
+	// Tint splits `sampler2D name` into a texture `name` and a sampler `name_sampler` at a binding of its own choosing
+	// (--sampler-mapping reads one digit only). The driver expects the sampler at binding + COMBINED_SAMPLER_BINDING_OFFSET.
+	Vector<String> lines = r_wgsl.split("\n");
+	for (int i = 0; i < lines.size(); i++) {
+		String &line = lines.write[i];
+		if (!line.begins_with("@group(")) {
+			continue;
+		}
+		for (const CombinedSampler &combined : p_combined) {
+			if (line.contains("_sampler")) {
+			}
+			if (line.contains(" var " + combined.name + "_sampler : sampler") && _read_uint(line, 7) == combined.set) {
+				line = vformat("@group(%du) @binding(%du)", combined.set, combined.binding + RenderingShaderContainerWebGPU::COMBINED_SAMPLER_BINDING_OFFSET) + line.substr(line.find(" var "));
+				break;
+			}
+		}
+	}
+	r_wgsl = String("\n").join(lines);
+	for (const String &line : lines) {
+		if (!line.begins_with("@group(")) {
+			continue;
+		}
+		const int binding_at = line.find("@binding(");
+		const int type_at = line.find(" : ");
+		if (binding_at < 0 || type_at < 0 || line.find("var<") >= 0) {
+			continue; // Buffers and push constants are not annotated.
+		}
+		const uint32_t group = _read_uint(line, 7);
+		uint32_t binding = _read_uint(line, binding_at + 9);
+		const String type = line.substr(type_at + 3).strip_edges().trim_suffix(";");
+		bool combined_sampler = false;
+		if (type.begins_with("sampler") && binding >= RenderingShaderContainerWebGPU::COMBINED_SAMPLER_BINDING_OFFSET) {
+			binding -= RenderingShaderContainerWebGPU::COMBINED_SAMPLER_BINDING_OFFSET;
+			combined_sampler = true;
+		}
+		for (int i = 0; i < p_uniform_keys.size(); i++) {
+			if ((uint32_t)p_uniform_keys[i].x != group || (uint32_t)p_uniform_keys[i].y != binding) {
+				continue;
+			}
+			RenderingShaderContainerWebGPU::BindingExtra &extra = r_extras.write[p_uniform_keys[i].z];
+			if (type.begins_with("sampler")) {
+				extra.comparison = type == "sampler_comparison";
+			} else if (type.begins_with("texture_depth")) {
+				extra.depth = 1;
+				extra.multisampled = type.contains("multisampled");
+			} else if (type.begins_with("texture_multisampled")) {
+				extra.multisampled = 1;
+			}
+			if (type.ends_with("<u32>")) {
+				extra.numeric = 2;
+			} else if (type.ends_with("<i32>")) {
+				extra.numeric = 1;
+			} else if (!combined_sampler && type.begins_with("texture_")) {
+				extra.numeric = type.begins_with("texture_depth") ? 0 : extra.numeric;
+			}
+			break;
+		}
+	}
 }
 #endif
 
@@ -379,11 +515,31 @@ bool RenderingShaderContainerWebGPU::_set_code_from_spirv(const ReflectShader &p
 #ifndef WEB_ENABLED
 	tint = OS::get_singleton()->get_environment("GODOT_TINT_PATH");
 #endif
+	_set_from_shader_reflection_post(p_shader); // Make sure binding_extras matches this reflection before it is annotated.
+#ifndef WEB_ENABLED
+	Vector<CombinedSampler> combined_samplers;
+	Vector<Vector3i> uniform_keys; // (set, binding, flat index into binding_extras).
+	{
+		int flat_index = 0;
+		for (uint32_t set = 0; set < p_shader.uniform_sets.size(); set++) {
+			for (const ReflectUniform &uniform : p_shader.uniform_sets[set]) {
+				uniform_keys.push_back(Vector3i(set, uniform.binding, flat_index++));
+				if (uniform.type == RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE) {
+					CombinedSampler combined;
+					combined.name = String::utf8(uniform.get_spv_reflect().name);
+					combined.set = set;
+					combined.binding = uniform.binding;
+					combined_samplers.push_back(combined);
+				}
+			}
+		}
+	}
+#endif
 	shaders.resize(stages.size());
 	for (uint32_t i = 0; i < stages.size(); i++) {
 		RenderingShaderContainer::Shader &shader = shaders.ptrw()[i];
 		shader.shader_stage = stages[i].shader_stage;
-		Vector<uint8_t> spirv = _strip_buffer_non_readable(stages[i].spirv_data());
+		Vector<uint8_t> spirv = _lower_unsupported_instructions(_strip_buffer_non_readable(stages[i].spirv_data()));
 		if (stages[i].shader_stage == RDC::SHADER_STAGE_VERTEX) {
 			spirv = _flip_vertex_y(spirv);
 		}
@@ -393,6 +549,7 @@ bool RenderingShaderContainerWebGPU::_set_code_from_spirv(const ReflectShader &p
 		if (!tint.is_empty()) {
 			String wgsl;
 			ERR_FAIL_COND_V(!_spirv_to_wgsl(tint, spirv, String::utf8(shader_name.get_data()), wgsl), false);
+			_annotate_from_wgsl(wgsl, uniform_keys, combined_samplers, binding_extras);
 			const CharString utf8 = wgsl.utf8();
 			shader.code_compressed_bytes.resize(utf8.length());
 			memcpy(shader.code_compressed_bytes.ptrw(), utf8.get_data(), utf8.length());
