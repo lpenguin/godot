@@ -71,3 +71,11 @@ Other findings:
   type (`Resolve`, 3 modules).
 * Browsers do not enable Tint's `chromium_disable_uniformity_analysis` for pages, so the uniformity errors cannot be
   suppressed and have to be fixed in the shaders.
+
+## After the lightmap/VoxelGI change (texture arrays out of the scene shader)
+
+Measured on Linux with lavapipe: the `WEBGPU` shader define forced on the Vulkan driver (temporary local patch, not committed),
+`shader_probe` project, raw SPIR-V 1.3 dump, Tint from Dawn `v20261006.214603` (`tint --format wgsl`, no container passes).
+`SceneForwardClusteredShaderRD`: **340 of 616 convert** (was 0). Remaining 276: 24 texture atomics (`Image` storage class, SDF
+render mode) and 252 `textureSample` / `dpdx` / `subgroupBroadcastFirst` in non-uniform control flow (80 + 20 + 8 shown by
+message, the rest report the message on a second line). Next step is the uniform control flow work.
