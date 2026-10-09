@@ -10,7 +10,7 @@ on:
     inputs:
       tag:
         description: Release tag
-        default: godot-4.7.2-webgpu-v5
+        default: godot-4.7.2-webgpu-v6
   push:
     branches: [webgpu-release]
 
@@ -108,7 +108,7 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag || 'godot-4.7.2-webgpu-v5' }}
+          TAG: ${{ github.event.inputs.tag || 'godot-4.7.2-webgpu-v6' }}
         run: |
           cd assets
           sha256sum * > SHA256SUMS
