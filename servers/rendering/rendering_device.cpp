@@ -4185,12 +4185,16 @@ Vector<uint8_t> RenderingDevice::shader_compile_binary_from_spirv(const Vector<S
 	if (driver->get_capabilities().device_family == RDD::DEVICE_WEBGPU) {
 		Ref<HashingContext> hashing = memnew(HashingContext);
 		hashing->start(HashingContext::HASH_SHA256);
-		hashing->update(p_shader_name.to_utf8_buffer());
+		if (!p_shader_name.is_empty()) {
+			hashing->update(p_shader_name.to_utf8_buffer());
+		}
 		for (const ShaderStageSPIRVData &stage : p_spirv) {
 			PackedByteArray stage_id;
 			stage_id.push_back((uint8_t)stage.shader_stage);
 			hashing->update(stage_id);
-			hashing->update(stage.spirv);
+			if (!stage.spirv.is_empty()) {
+				hashing->update(stage.spirv);
+			}
 		}
 		const PackedByteArray digest = hashing->finish();
 		webgpu_cache_name = String::hex_encode_buffer(digest.ptr(), digest.size()) + ".bin";
