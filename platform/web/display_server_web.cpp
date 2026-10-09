@@ -232,7 +232,9 @@ void DisplayServerWeb::_key_callback(const String &p_key_event_code, const Strin
 	ds->key_event_buffer.write[ds->key_event_pos++] = ke;
 
 	// Make sure to flush all events so we can call restricted APIs inside the event.
+#ifndef WEBGPU_ENABLED
 	Input::get_singleton()->flush_buffered_events();
+#endif
 }
 
 // Mouse
@@ -317,7 +319,9 @@ int DisplayServerWeb::_mouse_button_callback(int p_pressed, int p_button, double
 	OS_Web::get_singleton()->resume_audio();
 
 	// Make sure to flush all events so we can call restricted APIs inside the event.
+#ifndef WEBGPU_ENABLED
 	Input::get_singleton()->flush_buffered_events();
+#endif
 
 	// Prevent multi-click text selection and wheel-click scrolling anchor.
 	// Context menu is prevented through contextmenu event.
@@ -785,7 +789,9 @@ void DisplayServerWeb::_touch_callback(int p_type, int p_count) {
 			Input::get_singleton()->parse_input_event(ev);
 
 			// Make sure to flush all events so we can call restricted APIs inside the event.
+#ifndef WEBGPU_ENABLED
 			Input::get_singleton()->flush_buffered_events();
+#endif
 		}
 	}
 }
@@ -962,7 +968,9 @@ void DisplayServerWeb::_ime_callback(int p_type, const String &p_text) {
 	}
 
 	ds->process_keys();
+#ifndef WEBGPU_ENABLED
 	Input::get_singleton()->flush_buffered_events();
+#endif
 }
 
 void DisplayServerWeb::window_set_ime_active(const bool p_active, DisplayServerEnums::WindowID p_window) {
