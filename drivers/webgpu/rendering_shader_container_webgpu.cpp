@@ -546,7 +546,7 @@ bool _wgsl_array_parts(const String &p_type, String &r_element, String &r_count)
 // `matCxR<f32>` with three or four rows: the columns are vec3 or vec4, which have the 16 bytes stride an array in a
 // uniform buffer needs. Other shapes stay matrices.
 bool _wgsl_matrix_parts(const String &p_type, int &r_columns, int &r_rows) {
-	if (p_type.length() != 10 || !p_type.begins_with("mat") || p_type[4] != 'x' || !p_type.ends_with("<f32>")) {
+	if (p_type.length() != 11 || !p_type.begins_with("mat") || p_type[4] != 'x' || !p_type.ends_with("<f32>")) {
 		return false;
 	}
 	r_columns = p_type[3] - '0';
