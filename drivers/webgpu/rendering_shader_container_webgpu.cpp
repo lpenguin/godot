@@ -711,10 +711,13 @@ void _wgsl_matrix_fields_to_vectors(String &r_wgsl) {
 				const char32_t c = rhs[k];
 				plain_copy = _wgsl_is_ident_char(c) || c == '.' || c == '[' || c == ']' || c == '(' || c == ')' || c == '*' || c == ' ';
 			}
-			if (!plain_copy) {
-				edits.push_back({ after + 1, semicolon, " " + to_array(type) + "(" + rhs + ")" });
+			if (plain_copy) {
+				skip_until = semicolon;
+			} else {
+				// The value is a matrix: it becomes the array of its columns. Reads inside of it are handled on their own.
+				edits.push_back({ after + 1, after + 1, " " + to_array(type) + "(" });
+				edits.push_back({ semicolon, semicolon, ")" });
 			}
-			skip_until = semicolon;
 			i = end - 1;
 			continue;
 		}
@@ -723,6 +726,12 @@ void _wgsl_matrix_fields_to_vectors(String &r_wgsl) {
 		i = end - 1;
 	}
 
+	struct EditOrder {
+		bool operator()(const WGSLEdit &p_a, const WGSLEdit &p_b) const {
+			return p_a.begin != p_b.begin ? p_a.begin < p_b.begin : p_a.end < p_b.end;
+		}
+	};
+	edits.sort_custom<EditOrder>();
 	String out;
 	int pos = 0;
 	for (const WGSLEdit &edit : edits) {
