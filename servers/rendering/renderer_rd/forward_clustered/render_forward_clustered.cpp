@@ -3348,6 +3348,9 @@ void RenderForwardClustered::_update_render_base_uniform_set() {
 			}
 		}
 
+#ifdef WEBGPU_ENABLED
+		if (!webgpu)
+#endif
 		{
 			RD::Uniform u;
 			u.binding = 18;
@@ -3357,6 +3360,9 @@ void RenderForwardClustered::_update_render_base_uniform_set() {
 			uniforms.push_back(u);
 		}
 
+#ifdef WEBGPU_ENABLED
+		if (!webgpu)
+#endif
 		{
 			RD::Uniform u;
 			u.binding = 19;
@@ -3508,9 +3514,22 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 
 			textures.write[i] = default_tex;
 		}
+#ifdef WEBGPU_ENABLED
+		if (webgpu) {
+			for (int i = 0; i < textures.size(); i++) {
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, LIGHTMAP_TEXTURE_BINDING_WEBGPU + i, textures[i]));
+			}
+		} else {
+#endif
 		RD::Uniform u(RD::UNIFORM_TYPE_TEXTURE, 7, textures);
 		uniforms.push_back(u);
+#ifdef WEBGPU_ENABLED
+		}
+#endif
 	}
+#ifdef WEBGPU_ENABLED
+	if (!webgpu) // VoxelGI needs an array of 3D textures.
+#endif
 	{
 		RD::Uniform u;
 		u.binding = 8;
@@ -3838,6 +3857,15 @@ RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_te
 		uniforms.push_back(u);
 	}
 
+#ifdef WEBGPU_ENABLED
+	if (webgpu) {
+		// No Lightmaps
+		RID default_tex = texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_WHITE);
+		for (uint32_t i = 0; i < scene_state.max_lightmaps * 2; i++) {
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, LIGHTMAP_TEXTURE_BINDING_WEBGPU + i, default_tex));
+		}
+	} else
+#endif
 	{
 		// No Lightmaps
 		RD::Uniform u;
@@ -3852,6 +3880,9 @@ RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_te
 		uniforms.push_back(u);
 	}
 
+#ifdef WEBGPU_ENABLED
+	if (!webgpu)
+#endif
 	{
 		// No VoxelGIs
 		RD::Uniform u;
@@ -5102,6 +5133,9 @@ void RenderForwardClustered::_update_shader_quality_settings() {
 
 RenderForwardClustered::RenderForwardClustered() {
 	singleton = this;
+#ifdef WEBGPU_ENABLED
+	webgpu = RD::get_singleton()->get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU;
+#endif
 
 	/* SCENE SHADER */
 
@@ -5127,6 +5161,12 @@ RenderForwardClustered::RenderForwardClustered() {
 		{
 			//lightmaps
 			scene_state.max_lightmaps = MAX_LIGHTMAPS;
+#ifdef WEBGPU_ENABLED
+			if (webgpu) {
+				// No arrays of textures in WebGPU: the shader gets one binding per lightmap texture (two lightmaps -> four textures).
+				scene_state.max_lightmaps = MAX_LIGHTMAPS_WEBGPU;
+			}
+#endif
 			defines += "\n#define MAX_LIGHTMAP_TEXTURES " + itos(scene_state.max_lightmaps) + "\n";
 			defines += "\n#define MAX_LIGHTMAPS " + itos(scene_state.max_lightmaps) + "\n";
 
@@ -5169,6 +5209,11 @@ RenderForwardClustered::RenderForwardClustered() {
 
 		RD::TextureFormat tformat;
 		tformat.format = RD::DATA_FORMAT_R8_UNORM;
+#ifdef WEBGPU_ENABLED
+		if (webgpu) {
+			tformat.format = RD::DATA_FORMAT_R8G8B8A8_UNORM; // WebGPU has no r8 storage textures (the shader writes rgba8 there).
+		}
+#endif
 		tformat.width = 1024;
 		tformat.height = 1024;
 		tformat.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;

@@ -4,22 +4,32 @@
 
 #VERSION_DEFINES
 
+#ifdef WEBGPU
+#extension GL_EXT_samplerless_texture_functions : enable
+// Tint cannot combine a sampler with a multisampled texture; the samples are only fetched anyway.
+#define MS_TEXTURE2D texture2DMS
+#define MS_UTEXTURE2D utexture2DMS
+#else
+#define MS_TEXTURE2D sampler2DMS
+#define MS_UTEXTURE2D usampler2DMS
+#endif
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 #ifdef MODE_RESOLVE_DEPTH
-layout(set = 0, binding = 0) uniform sampler2DMS source_depth;
+layout(set = 0, binding = 0) uniform MS_TEXTURE2D source_depth;
 layout(r32f, set = 1, binding = 0) uniform restrict writeonly image2D dest_depth;
 #endif
 
 #ifdef MODE_RESOLVE_GI
-layout(set = 0, binding = 0) uniform sampler2DMS source_depth;
-layout(set = 0, binding = 1) uniform sampler2DMS source_normal_roughness;
+layout(set = 0, binding = 0) uniform MS_TEXTURE2D source_depth;
+layout(set = 0, binding = 1) uniform MS_TEXTURE2D source_normal_roughness;
 
 layout(r32f, set = 1, binding = 0) uniform restrict writeonly image2D dest_depth;
 layout(rgba8, set = 1, binding = 1) uniform restrict writeonly image2D dest_normal_roughness;
 
 #ifdef VOXEL_GI_RESOLVE
-layout(set = 2, binding = 0) uniform usampler2DMS source_voxel_gi;
+layout(set = 2, binding = 0) uniform MS_UTEXTURE2D source_voxel_gi;
 layout(rg8ui, set = 3, binding = 0) uniform restrict writeonly uimage2D dest_voxel_gi;
 #endif
 

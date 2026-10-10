@@ -30,6 +30,8 @@
 
 #include "rendering_shader_container_vulkan.h"
 
+#include "core/os/os.h"
+
 #include <thirdparty/misc/smolv.h>
 
 // RenderingShaderContainerVulkan
@@ -101,7 +103,9 @@ RenderingDeviceCommons::ShaderLanguageVersion RenderingShaderContainerFormatVulk
 }
 
 RenderingDeviceCommons::ShaderSpirvVersion RenderingShaderContainerFormatVulkan::get_shader_spirv_version() const {
-	return SHADER_SPIRV_VERSION_1_4;
+	// Debug aid: lets the engine produce the SPIR-V 1.3 modules that a WebGPU build would compile.
+	static const bool use_spirv_1_3 = OS::get_singleton()->get_environment("GODOT_VULKAN_SPIRV_1_3") == "1";
+	return use_spirv_1_3 ? SHADER_SPIRV_VERSION_1_3 : SHADER_SPIRV_VERSION_1_4;
 }
 
 void RenderingShaderContainerFormatVulkan::set_debug_info_enabled(bool p_debug_info_enabled) {

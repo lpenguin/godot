@@ -49,6 +49,9 @@ ClusterBuilderSharedDataRD::ClusterBuilderSharedDataRD() {
 
 	{
 		RD::FramebufferFormatID fb_format;
+#ifdef WEBGPU_ENABLED
+		RD::FramebufferFormatID fb_format_msaa = RD::INVALID_FORMAT_ID;
+#endif
 		RD::PipelineColorBlendState blend_state;
 		RD::PipelineRasterizationState rasterization_state;
 		RD::PipelineMultisampleState ms;
@@ -70,9 +73,19 @@ ClusterBuilderSharedDataRD::ClusterBuilderSharedDataRD() {
 			afs.push_back(RD::AttachmentFormat());
 			afs.write[0].usage_flags = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT;
 			fb_format = rd->framebuffer_format_create(afs);
+#ifdef WEBGPU_ENABLED
+			// The attachment has to exist as a real texture, and its sample count has to match the pipeline.
+			afs.write[0].samples = RD::TEXTURE_SAMPLES_4;
+			fb_format_msaa = rd->framebuffer_format_create(afs);
+#endif
 			blend_state = RD::PipelineColorBlendState::create_blend();
 			shader_variant = ClusterRender::SHADER_USE_ATTACHMENT;
 		}
+#ifdef WEBGPU_ENABLED
+		if (fb_format_msaa == RD::INVALID_FORMAT_ID) {
+			fb_format_msaa = fb_format;
+		}
+#endif
 
 		cluster_render.cluster_render_shader.initialize(variants);
 		cluster_render.shader_version = cluster_render.cluster_render_shader.version_create();
@@ -91,7 +104,12 @@ ClusterBuilderSharedDataRD::ClusterBuilderSharedDataRD() {
 			specialization_constants.push_back(sc);
 		}
 #endif
-		cluster_render.shader_pipelines[ClusterRender::PIPELINE_MSAA] = RD::get_singleton()->render_pipeline_create(cluster_render.shader, fb_format, vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rasterization_state, ms, RD::PipelineDepthStencilState(), blend_state, 0, 0, specialization_constants);
+#ifdef WEBGPU_ENABLED
+#define FB_FORMAT_MSAA fb_format_msaa
+#else
+#define FB_FORMAT_MSAA fb_format
+#endif
+		cluster_render.shader_pipelines[ClusterRender::PIPELINE_MSAA] = RD::get_singleton()->render_pipeline_create(cluster_render.shader, FB_FORMAT_MSAA, vertex_format, RD::RENDER_PRIMITIVE_TRIANGLES, rasterization_state, ms, RD::PipelineDepthStencilState(), blend_state, 0, 0, specialization_constants);
 	}
 	{
 		Vector<String> versions;
@@ -273,6 +291,12 @@ void ClusterBuilderRD::_clear() {
 
 	RD::get_singleton()->free_rid(framebuffer);
 	framebuffer = RID();
+#ifdef WEBGPU_ENABLED
+	if (framebuffer_color.is_valid()) {
+		RD::get_singleton()->free_rid(framebuffer_color);
+		framebuffer_color = RID();
+	}
+#endif
 
 	cluster_render_uniform_set = RID();
 	cluster_store_uniform_set = RID();
@@ -313,6 +337,20 @@ void ClusterBuilderRD::setup(Size2i p_screen_size, uint32_t p_max_elements, RID 
 	element_buffer = RD::get_singleton()->storage_buffer_create(sizeof(RenderElementData) * render_element_max);
 
 	uint32_t div_value = 1 << divisor;
+#ifdef WEBGPU_ENABLED
+	if (!RD::get_singleton()->has_feature(RD::SUPPORTS_FRAGMENT_SHADER_WITH_ONLY_SIDE_EFFECTS)) {
+		RD::TextureFormat tf;
+		tf.format = RD::DATA_FORMAT_R8G8B8A8_UNORM;
+		tf.width = MAX(1, p_screen_size.x / div_value);
+		tf.height = MAX(1, p_screen_size.y / div_value);
+		tf.usage_bits = RD::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT;
+		tf.samples = use_msaa ? RD::TEXTURE_SAMPLES_4 : RD::TEXTURE_SAMPLES_1;
+		framebuffer_color = RD::get_singleton()->texture_create(tf, RD::TextureView());
+		Vector<RID> attachments;
+		attachments.push_back(framebuffer_color);
+		framebuffer = RD::get_singleton()->framebuffer_create(attachments);
+	} else
+#endif
 	if (use_msaa) {
 		framebuffer = RD::get_singleton()->framebuffer_create_empty(p_screen_size / div_value, RD::TEXTURE_SAMPLES_4);
 	} else {

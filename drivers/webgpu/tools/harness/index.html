@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Godot WebGPU tests</title>
+<style>
+	body { font-family: sans-serif; margin: 12px; }
+	canvas { border: 2px solid #444; background: #eee; }
+</style>
+</head>
+<body>
+<h3>Godot WebGPU: RenderingDevice screen output</h3>
+<canvas id="canvas" width="384" height="384"></canvas>
+<script src="godot.js"></script>
+<script>
+(async () => {
+	const params = new URLSearchParams(location.search);
+	const filter = params.get('filter') || '*Browser*';
+	const baked = (params.get('baked') || '').split(',').filter(Boolean);
+	console.log('navigator.gpu:', typeof navigator.gpu, ' JSPI:', typeof WebAssembly.Suspending, typeof WebAssembly.promising);
+	try {
+		const adapter = await navigator.gpu.requestAdapter();
+		const keys = ['maxBindGroups', 'maxSampledTexturesPerShaderStage', 'maxSamplersPerShaderStage', 'maxStorageBuffersPerShaderStage', 'maxStorageTexturesPerShaderStage', 'maxUniformBuffersPerShaderStage', 'maxBindingsPerBindGroup', 'maxTextureArrayLayers', 'maxImmediateSize'];
+		console.log('adapter limits: ' + keys.map((k) => k + '=' + adapter.limits[k]).join(' '));
+		console.log('adapter features: ' + [...adapter.features].join(' '));
+	} catch (e) {
+		console.log('adapter query failed: ' + e);
+	}
+	const engine = new Engine({
+		executable: 'godot',
+		canvas: document.getElementById('canvas'),
+		args: ['--headless', '--test', '--test-case=' + filter],
+		onPrint: (...a) => console.log(a.join(' ')),
+		onPrintError: (...a) => console.log('[stderr] ' + a.join(' ')),
+	});
+	try {
+		await engine.init('godot');
+		console.log('engine initialized (wasm loaded)');
+		for (const name of baked) {
+			await engine.preloadFile('/baked/' + name, '/webgpu/' + name);
+		}
+		await engine.start();
+		console.log('engine.start() resolved');
+	} catch (e) {
+		console.log('ENGINE ERROR: ' + (e && e.stack ? e.stack : e));
+	}
+})();
+</script>
+</body>
+</html>

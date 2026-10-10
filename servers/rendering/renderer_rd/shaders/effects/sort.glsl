@@ -49,7 +49,9 @@ sort_buffer;
 
 layout(push_constant, std430) uniform Params {
 	uint total_elements;
-	uint pad[3];
+	uint pad0;
+	uint pad1;
+	uint pad2;
 	ivec4 job_params;
 }
 params;

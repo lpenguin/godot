@@ -58,6 +58,17 @@ static uint64_t target_ticks = 0;
 static bool main_started = false;
 static bool shutdown_complete = false;
 
+#ifdef WEBGPU_ENABLED
+// The WebGPU driver waits for the GPU by suspending the WebAssembly stack (JSPI). That is only allowed from a call that
+// itself entered through a JSPI export, which `main` is and an emscripten_set_main_loop() callback is not. The frame
+// loop therefore runs in `godot_web_main` and waits for the next animation frame between iterations.
+EM_ASYNC_JS(void, godot_web_wait_animation_frame, (), {
+	await new Promise((resolve) => requestAnimationFrame(resolve));
+});
+static bool async_loop = false;
+static bool exit_requested = false;
+#endif
+
 void exit_callback() {
 	if (!shutdown_complete) {
 		return; // Still waiting.
@@ -104,6 +115,13 @@ void main_loop_callback() {
 #endif
 
 	if (os->main_loop_iterate()) {
+#ifdef WEBGPU_ENABLED
+		if (async_loop) {
+			exit_requested = true;
+			godot_js_os_finish_async(cleanup_after_sync);
+			return;
+		}
+#endif
 		emscripten_cancel_main_loop(); // Cancel current loop and set the cleanup one.
 		emscripten_set_main_loop(exit_callback, -1, false);
 		godot_js_os_finish_async(cleanup_after_sync);
@@ -172,10 +190,25 @@ extern EMSCRIPTEN_KEEPALIVE int godot_web_main(int argc, char *argv[]) {
 		SceneTree::get_singleton()->get_root()->emit_signal(SNAME("files_dropped"), ps);
 	}
 #endif
+#ifdef WEBGPU_ENABLED
+	async_loop = true;
+	// Immediately run the first iteration, then one per animation frame until the game exits.
+	main_loop_callback();
+	while (!exit_requested) {
+		godot_web_wait_animation_frame();
+		main_loop_callback();
+	}
+	while (!shutdown_complete) {
+		godot_web_wait_animation_frame();
+	}
+	exit_callback();
+	return os->get_exit_code();
+#else
 	emscripten_set_main_loop(main_loop_callback, -1, false);
 	// Immediately run the first iteration.
 	// We are inside an animation frame, we want to immediately draw on the newly setup canvas.
 	main_loop_callback();
 
 	return os->get_exit_code();
+#endif
 }

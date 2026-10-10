@@ -50,6 +50,8 @@ if env["d3d12"]:
         print_error("Target platform '{}' does not support the D3D12 rendering driver".format(env["platform"]))
         Exit(255)
     SConscript("d3d12/SCsub")
+if env["webgpu"]:
+    SConscript("webgpu/SCsub")
 if env["opengl3"]:
     SConscript("gl_context/SCsub")
     SConscript("gles3/SCsub")

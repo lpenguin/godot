@@ -265,6 +265,13 @@ def configure(env: "SConsEnvironment"):
         # See https://emscripten.org/docs/tools_reference/settings_reference.html#gl-enable-get-proc-address
         env.Append(LINKFLAGS=["-sGL_ENABLE_GET_PROC_ADDRESS=0"])
 
+    if env["webgpu"]:
+        env.AppendUnique(CPPDEFINES=["WEBGPU_ENABLED", "RD_ENABLED"])
+        # Headers and the JS bridge come from Emscripten's bundled Dawn port. Blocking waits on futures
+        # (wgpuInstanceWaitAny) suspend the WebAssembly stack through JSPI.
+        env.Append(CCFLAGS=["--use-port=emdawnwebgpu"])
+        env.Append(LINKFLAGS=["--use-port=emdawnwebgpu", "-sJSPI"])
+
     if env["javascript_eval"]:
         env.Append(CPPDEFINES=["JAVASCRIPT_EVAL_ENABLED"])
 

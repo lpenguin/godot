@@ -88,12 +88,14 @@ int test_main(int argc, char *argv[]) {
 
 	WorkerThreadPool::get_singleton()->init();
 
+#ifndef WEB_ENABLED // The temporary test folder cannot be created in the browser sandbox.
 	{
 		const String test_path = TestUtils::get_temp_path("");
 		Ref<DirAccess> da = DirAccess::open(test_path); // get_temp_path() automatically creates the folder.
 		ERR_FAIL_COND_V(da.is_null(), 0);
 		ERR_FAIL_COND_V_MSG(da->erase_contents_recursive() != OK, 0, "Failed to delete files");
 	}
+#endif
 
 	// Run custom test tools.
 	if (test_commands) {

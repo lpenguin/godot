@@ -544,6 +544,15 @@ def configure(env: "SConsEnvironment"):
             # No pkgconfig file so far, hardcode expected lib name.
             env.Append(LIBS=["glslang", "SPIRV", "glslang-default-resource-limits"])
 
+    if env["webgpu"]:
+        # Experimental: the driver runs on wgpu-native (a shared library next to the editor) for tests and shader baking.
+        env.Append(CPPDEFINES=["WEBGPU_ENABLED", "RD_ENABLED"])
+        wgpu_dir = os.path.abspath(env["wgpu_native_path"])
+        env.Append(CPPPATH=[wgpu_dir + "/include"])
+        env.Append(LIBPATH=[wgpu_dir + "/lib"])
+        env.Append(RPATH=[wgpu_dir + "/lib"])
+        env.Append(LIBS=["wgpu_native"])
+
     if env["opengl3"]:
         env.Append(CPPDEFINES=["GLES3_ENABLED"])
 

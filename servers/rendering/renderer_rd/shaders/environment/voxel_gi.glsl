@@ -136,7 +136,8 @@ layout(push_constant, std430) uniform Params {
 	bool on_mipmap;
 	float propagation;
 	float cell_size;
-	float pad[2];
+	float pad0;
+	float pad1;
 }
 params;
 

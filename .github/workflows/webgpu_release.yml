@@ -1,0 +1,119 @@
+name: WebGPU release
+
+# Builds the artifacts the WoodWorks web deployment needs and publishes them as a GitHub release:
+#   * web export templates (WebGPU driver, Emscripten + JSPI), single-threaded wasm32
+#   * a Linux editor with the native WebGPU driver (wgpu-native), used to import the project and to bake WGSL shaders
+#   * Tint (SPIR-V -> WGSL), taken from a Dawn release
+# Repeated runs reuse the SCons object cache, so only changed files are rebuilt.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag
+        default: godot-4.7.2-webgpu-v11
+  push:
+    branches: [webgpu-release]
+
+env:
+  EM_VERSION: 6.0.11
+  WGPU_NATIVE_VERSION: v29.0.1.1
+  DAWN_URL: https://github.com/google/dawn/releases/download/v20261006.214603/Dawn-2dca9f30b7c1e56307280679473d6f35a3c71a41-ubuntu-latest-Release.tar.gz
+  SCONS_CACHE: ${{ github.workspace }}/.scons_cache
+  SCONS_CACHE_LIMIT: 4096
+
+jobs:
+  web-template:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [template_release, template_debug]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: ${{ env.EM_VERSION }}
+          actions-cache-folder: emsdk-cache
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.SCONS_CACHE }}
+          key: scons-web-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: scons-web-${{ matrix.target }}-
+      - run: pip install scons
+      - name: Build
+        run: >-
+          scons platform=web target=${{ matrix.target }} threads=no webgpu=yes
+          optimize=size debug_symbols=no tests=no linkflags=--profiling-funcs -j$(nproc)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-${{ matrix.target }}
+          path: bin/godot.web.${{ matrix.target }}.wasm32.nothreads.zip
+          retention-days: 7
+
+  editor-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libx11-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev \
+            libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev libxi-dev libxrandr-dev libwayland-dev libdbus-1-dev \
+            libfontconfig-dev libspeechd-dev
+          pip install scons
+      - name: wgpu-native and Tint
+        run: |
+          mkdir -p thirdparty_local/wgpu-native tint_dl
+          curl -fsSL -o wgpu.zip "https://github.com/gfx-rs/wgpu-native/releases/download/${WGPU_NATIVE_VERSION}/wgpu-linux-x86_64-release.zip"
+          unzip -q wgpu.zip -d thirdparty_local/wgpu-native
+          curl -fsSL -o dawn.tar.gz "$DAWN_URL"
+          tar -xzf dawn.tar.gz -C tint_dl
+          find tint_dl -name tint -type f -exec cp {} tint \;
+          chmod +x tint
+          ls thirdparty_local/wgpu-native/lib
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.SCONS_CACHE }}
+          key: scons-editor-${{ github.sha }}
+          restore-keys: scons-editor-
+      - name: Build editor
+        run: >-
+          scons platform=linuxbsd target=editor dev_build=no optimize=speed debug_symbols=no
+          webgpu=yes vulkan=yes tests=no -j$(nproc)
+      - name: Package
+        run: |
+          mkdir -p pkg
+          cp bin/godot.linuxbsd.editor.x86_64 pkg/godot
+          cp thirdparty_local/wgpu-native/lib/libwgpu_native.so pkg/
+          cp tint pkg/
+          tar -C pkg -czf godot-editor-linux-webgpu.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: editor-linux
+          path: godot-editor-linux-webgpu.tar.gz
+          retention-days: 7
+
+  release:
+    needs: [web-template, editor-linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || 'godot-4.7.2-webgpu-v11' }}
+        run: |
+          cd assets
+          sha256sum * > SHA256SUMS
+          ls -la
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            && gh release upload "$TAG" * --clobber --repo "$GITHUB_REPOSITORY" \
+            || gh release create "$TAG" * --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+                 --title "$TAG" --notes "Godot 4.7.2 with the WebGPU driver: web templates, Linux editor with wgpu-native and Tint."

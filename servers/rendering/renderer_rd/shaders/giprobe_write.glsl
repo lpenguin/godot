@@ -69,7 +69,8 @@ layout(push_constant, std430) uniform Params {
 	uint light_count;
 	uint cell_offset;
 	uint cell_count;
-	uint pad[2];
+	uint pad0;
+	uint pad1;
 }
 params;
 
