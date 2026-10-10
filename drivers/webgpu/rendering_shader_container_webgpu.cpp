@@ -502,46 +502,16 @@ Vector<uint8_t> _flip_vertex_y(const Vector<uint8_t> &p_spirv) {
 
 #ifndef WEB_ENABLED
 
-// Firefox (wgpu, Direct3D 12) reads the matrices of uniform buffers wrongly: the scene data comes out transposed (mat3x4
-// even with shuffled elements) while a plain mat4 uniform of a material is fine. The memory layout of a matrix is that of
-// an array of its column vectors, so the uniform buffers are declared with arrays of vectors instead of matrices, and every
-// read of such a value builds the matrix back in the shader. The fix never leaves the WGSL that Tint wrote.
+// Firefox (wgpu, Direct3D 12) reads matrices that are fields of a struct wrongly: the scene data comes out transposed (a
+// mat3x4 even with shuffled elements), while matrices that are not struct fields are fine. The memory layout of a matrix
+// is that of an array of its column vectors, so every matrix field is declared as such an array, and a read of the field
+// builds the matrix again in the shader. The fix never leaves the WGSL that Tint wrote.
 struct WGSLStructInfo {
 	Vector<String> names;
-	Vector<String> attributes;
 	Vector<String> types;
 };
 
 typedef HashMap<String, WGSLStructInfo> WGSLStructs;
-
-// Splits `array<T, Nu>` into T and N (N stays empty without a count).
-bool _wgsl_array_parts(const String &p_type, String &r_element, String &r_count) {
-	if (!p_type.begins_with("array<") || !p_type.ends_with(">")) {
-		return false;
-	}
-	const String inner = p_type.substr(6, p_type.length() - 7);
-	// The element type may contain commas of its own (nested arrays), so the count is whatever follows the last comma
-	// outside of angle brackets.
-	int depth = 0;
-	int split = -1;
-	for (int i = 0; i < inner.length(); i++) {
-		if (inner[i] == '<') {
-			depth++;
-		} else if (inner[i] == '>') {
-			depth--;
-		} else if (inner[i] == ',' && depth == 0) {
-			split = i;
-		}
-	}
-	if (split < 0) {
-		r_element = inner.strip_edges();
-		r_count = String();
-	} else {
-		r_element = inner.substr(0, split).strip_edges();
-		r_count = inner.substr(split + 1).strip_edges();
-	}
-	return true;
-}
 
 // `matCxR<f32>` with three or four rows: the columns are vec3 or vec4, which have the 16 bytes stride an array in a
 // uniform buffer needs. Other shapes stay matrices.
@@ -554,314 +524,261 @@ bool _wgsl_matrix_parts(const String &p_type, int &r_columns, int &r_rows) {
 	return r_columns >= 2 && r_columns <= 4 && r_rows >= 3 && r_rows <= 4;
 }
 
-bool _wgsl_type_has_matrix(const String &p_type, const WGSLStructs &p_structs, HashSet<String> &r_seen) {
-	const String type = p_type.strip_edges();
-	int columns, rows;
-	if (_wgsl_matrix_parts(type, columns, rows)) {
-		return true;
-	}
-	String element, count;
-	if (_wgsl_array_parts(type, element, count)) {
-		return _wgsl_type_has_matrix(element, p_structs, r_seen);
-	}
-	const WGSLStructs::ConstIterator it = p_structs.find(type);
-	if (it && !r_seen.has(type)) {
-		r_seen.insert(type);
-		for (const String &field_type : it->value.types) {
-			if (_wgsl_type_has_matrix(field_type, p_structs, r_seen)) {
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-bool _wgsl_has_matrix(const String &p_type, const WGSLStructs &p_structs) {
-	HashSet<String> seen;
-	return _wgsl_type_has_matrix(p_type, p_structs, seen);
-}
-
-// The type as it is declared in the uniform buffer: matrices become arrays of column vectors, structs that contain
-// matrices their `_u` twin.
-String _wgsl_mirror_type(const String &p_type, const WGSLStructs &p_structs) {
-	const String type = p_type.strip_edges();
-	int columns, rows;
-	if (_wgsl_matrix_parts(type, columns, rows)) {
-		return vformat("array<vec%d<f32>, %du>", rows, columns);
-	}
-	String element, count;
-	if (_wgsl_array_parts(type, element, count) && _wgsl_has_matrix(element, p_structs)) {
-		return "array<" + _wgsl_mirror_type(element, p_structs) + (count.is_empty() ? String() : ", " + count) + ">";
-	}
-	if (p_structs.has(type) && _wgsl_has_matrix(type, p_structs)) {
-		return type + "_u";
-	}
-	return type;
-}
-
-// An expression of the mirrored type turned back into a value of the original type.
-String _wgsl_expand(const String &p_expr, const String &p_type, const WGSLStructs &p_structs) {
-	const String type = p_type.strip_edges();
-	int columns, rows;
-	if (_wgsl_matrix_parts(type, columns, rows)) {
-		Vector<String> parts;
-		for (int i = 0; i < columns; i++) {
-			parts.push_back(vformat("%s[%du]", p_expr, i));
-		}
-		return type + "(" + String(", ").join(parts) + ")";
-	}
-	String element, count;
-	if (_wgsl_array_parts(type, element, count) && _wgsl_has_matrix(element, p_structs) && count.trim_suffix("u").is_valid_int()) {
-		Vector<String> parts;
-		for (int i = 0; i < count.trim_suffix("u").to_int(); i++) {
-			parts.push_back(_wgsl_expand(vformat("%s[%du]", p_expr, i), element, p_structs));
-		}
-		return type + "(" + String(", ").join(parts) + ")";
-	}
-	const WGSLStructs::ConstIterator it = p_structs.find(type);
-	if (it && _wgsl_has_matrix(type, p_structs)) {
-		Vector<String> parts;
-		for (int i = 0; i < it->value.names.size(); i++) {
-			parts.push_back(_wgsl_expand(p_expr + "." + it->value.names[i], it->value.types[i], p_structs));
-		}
-		return type + "(" + String(", ").join(parts) + ")";
-	}
-	return p_expr;
-}
-
 bool _wgsl_is_ident_char(char32_t p_char) {
 	return (p_char >= 'a' && p_char <= 'z') || (p_char >= 'A' && p_char <= 'Z') || (p_char >= '0' && p_char <= '9') || p_char == '_';
 }
 
-// The end of the access path (`.name`, `[expression]`) that starts at p_from.
-int _wgsl_scan_path(const String &p_src, int p_from) {
-	int i = p_from;
-	while (i < p_src.length()) {
-		if (p_src[i] == '.' && i + 1 < p_src.length() && _wgsl_is_ident_char(p_src[i + 1])) {
-			i++;
-			while (i < p_src.length() && _wgsl_is_ident_char(p_src[i])) {
-				i++;
-			}
-		} else if (p_src[i] == '[') {
+// The start of the access path (`name`, `.name`, `[expression]`, `(expression)`) that ends right before p_end.
+int _wgsl_path_start(const String &p_src, int p_end) {
+	int j = p_end;
+	while (j > 0) {
+		const char32_t c = p_src[j - 1];
+		if (_wgsl_is_ident_char(c) || c == '.') {
+			j--;
+		} else if (c == ')' || c == ']') {
+			const char32_t open = c == ')' ? '(' : '[';
 			int depth = 0;
-			while (i < p_src.length()) {
-				if (p_src[i] == '[') {
+			int k = j - 1;
+			while (k >= 0) {
+				if (p_src[k] == c) {
 					depth++;
-				} else if (p_src[i] == ']') {
+				} else if (p_src[k] == open) {
 					depth--;
 					if (depth == 0) {
 						break;
 					}
 				}
-				i++;
+				k--;
 			}
-			i++;
+			if (k < 0) {
+				break;
+			}
+			j = k;
 		} else {
 			break;
 		}
 	}
-	return MIN(i, p_src.length());
+	return j;
 }
 
-// The type reached by following the path from p_type, or an empty string when the path cannot be followed.
-String _wgsl_walk_path(const String &p_type, const String &p_path, const WGSLStructs &p_structs) {
-	String type = p_type;
-	int i = 0;
-	while (i < p_path.length()) {
-		if (p_path[i] == '.') {
-			int end = i + 1;
-			while (end < p_path.length() && _wgsl_is_ident_char(p_path[end])) {
-				end++;
-			}
-			const String name = p_path.substr(i + 1, end - i - 1);
-			const WGSLStructs::ConstIterator it = p_structs.find(type);
-			if (!it) {
-				return String();
-			}
-			const int field = it->value.names.find(name);
-			if (field < 0) {
-				return String();
-			}
-			type = it->value.types[field];
-			i = end;
-		} else {
-			int depth = 0;
-			int end = i;
-			while (end < p_path.length()) {
-				if (p_path[end] == '[') {
-					depth++;
-				} else if (p_path[end] == ']') {
-					depth--;
-					if (depth == 0) {
-						break;
-					}
-				}
-				end++;
-			}
-			String element, count;
-			if (!_wgsl_array_parts(type, element, count)) {
-				return String();
-			}
-			type = element;
-			i = end + 1;
-		}
-	}
-	return type;
-}
+struct WGSLEdit {
+	int begin;
+	int end;
+	String text;
+};
 
-void _wgsl_uniform_matrices_to_vectors(String &r_wgsl) {
+void _wgsl_matrix_fields_to_vectors(String &r_wgsl) {
+	// The structs, with the byte ranges of their bodies.
 	WGSLStructs structs;
-	Vector<String> struct_order;
-	HashMap<String, String> uniforms;
+	Vector<Vector2i> struct_ranges;
 	const Vector<String> lines = r_wgsl.split("\n");
 	String current;
+	int offset = 0;
+	int range_begin = 0;
 	for (const String &raw : lines) {
+		const String line = raw.strip_edges();
+		if (!current.is_empty()) {
+			if (line.begins_with("}")) {
+				struct_ranges.push_back(Vector2i(range_begin, offset + raw.length()));
+				current = String();
+			} else {
+				String field = line.trim_suffix(",");
+				while (field.begins_with("@")) {
+					const int close = field.find(")");
+					const int space = field.find(" ");
+					const int cut = close >= 0 && (space < 0 || close < space || field.find("(") < space) ? close : space;
+					if (cut < 0) {
+						break;
+					}
+					field = field.substr(cut + 1).strip_edges();
+				}
+				const int colon = field.find(":");
+				if (colon > 0) {
+					structs[current].names.push_back(field.substr(0, colon).strip_edges());
+					structs[current].types.push_back(field.substr(colon + 1).strip_edges());
+				}
+			}
+		} else if (line.begins_with("struct ") && line.ends_with("{")) {
+			current = line.substr(7, line.length() - 8).strip_edges();
+			structs[current] = WGSLStructInfo();
+			range_begin = offset;
+		}
+		offset += raw.length() + 1;
+	}
+
+	// The matrix fields. A name that is a matrix of different shapes, or not a matrix elsewhere, is left alone.
+	HashMap<String, String> field_types;
+	HashSet<String> ambiguous;
+	for (const KeyValue<String, WGSLStructInfo> &entry : structs) {
+		for (int i = 0; i < entry.value.names.size(); i++) {
+			int columns, rows;
+			if (!_wgsl_matrix_parts(entry.value.types[i], columns, rows)) {
+				continue;
+			}
+			const String &name = entry.value.names[i];
+			if (field_types.has(name) && field_types[name] != entry.value.types[i]) {
+				ambiguous.insert(name);
+			}
+			field_types[name] = entry.value.types[i];
+		}
+	}
+	for (const KeyValue<String, WGSLStructInfo> &entry : structs) {
+		for (int i = 0; i < entry.value.names.size(); i++) {
+			int columns, rows;
+			if (!_wgsl_matrix_parts(entry.value.types[i], columns, rows) && field_types.has(entry.value.names[i])) {
+				ambiguous.insert(entry.value.names[i]);
+			}
+		}
+	}
+	for (const String &name : ambiguous) {
+		field_types.erase(name);
+	}
+	if (field_types.is_empty()) {
+		return;
+	}
+
+	HashMap<String, String> helpers;
+	const auto to_matrix = [&](const String &p_type) {
+		int columns, rows;
+		_wgsl_matrix_parts(p_type, columns, rows);
+		const String name = vformat("wg_a_to_m%dx%d", columns, rows);
+		Vector<String> parts;
+		for (int i = 0; i < columns; i++) {
+			parts.push_back(vformat("a[%du]", i));
+		}
+		helpers[name] = vformat("fn %s(a: array<vec%d<f32>, %du>) -> mat%dx%d<f32> {\n  return mat%dx%d<f32>(%s);\n}\n", name, rows, columns, columns, rows, columns, rows, String(", ").join(parts));
+		return name;
+	};
+	const auto to_array = [&](const String &p_type) {
+		int columns, rows;
+		_wgsl_matrix_parts(p_type, columns, rows);
+		const String name = vformat("wg_m%dx%d_to_a", columns, rows);
+		Vector<String> parts;
+		for (int i = 0; i < columns; i++) {
+			parts.push_back(vformat("m[%du]", i));
+		}
+		helpers[name] = vformat("fn %s(m: mat%dx%d<f32>) -> array<vec%d<f32>, %du> {\n  return array<vec%d<f32>, %du>(%s);\n}\n", name, columns, rows, rows, columns, rows, columns, String(", ").join(parts));
+		return name;
+	};
+	const auto in_struct = [&](int p_pos) {
+		for (const Vector2i &range : struct_ranges) {
+			if (p_pos >= range.x && p_pos < range.y) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// Reads and writes of the fields outside of the struct declarations.
+	Vector<WGSLEdit> edits;
+	int skip_until = 0;
+	const int length = r_wgsl.length();
+	for (int i = 0; i < length; i++) {
+		if (r_wgsl[i] != '.' || i < skip_until || i + 1 >= length || !_wgsl_is_ident_char(r_wgsl[i + 1]) || in_struct(i)) {
+			continue;
+		}
+		int end = i + 1;
+		while (end < length && _wgsl_is_ident_char(r_wgsl[end])) {
+			end++;
+		}
+		const String field = r_wgsl.substr(i + 1, end - i - 1);
+		const HashMap<String, String>::ConstIterator type_it = field_types.find(field);
+		if (!type_it) {
+			i = end - 1;
+			continue;
+		}
+		const String &type = type_it->value;
+		if (end < length && r_wgsl[end] == '[') {
+			// An element access of the column array reads a column vector, as it did on the matrix.
+			i = end - 1;
+			continue;
+		}
+		int after = end;
+		while (after < length && (r_wgsl[after] == ' ' || r_wgsl[after] == '\t')) {
+			after++;
+		}
+		const bool assignment = after + 1 < length && r_wgsl[after] == '=' && r_wgsl[after + 1] != '=';
+		if (assignment) {
+			const int semicolon = r_wgsl.find(";", after);
+			if (semicolon < 0) {
+				break;
+			}
+			const String rhs = r_wgsl.substr(after + 1, semicolon - after - 1).strip_edges();
+			// `a.field = b.field;` copies an array into an array.
+			const int dot = rhs.rfind(".");
+			bool plain_copy = dot > 0 && field_types.has(rhs.substr(dot + 1));
+			for (int k = 0; k < rhs.length() && plain_copy; k++) {
+				const char32_t c = rhs[k];
+				plain_copy = _wgsl_is_ident_char(c) || c == '.' || c == '[' || c == ']' || c == '(' || c == ')' || c == '*' || c == ' ';
+			}
+			if (!plain_copy) {
+				edits.push_back({ after + 1, semicolon, " " + to_array(type) + "(" + rhs + ")" });
+			}
+			skip_until = semicolon;
+			i = end - 1;
+			continue;
+		}
+		const int start = _wgsl_path_start(r_wgsl, i);
+		edits.push_back({ start, end, to_matrix(type) + "(" + r_wgsl.substr(start, end - start) + ")" });
+		i = end - 1;
+	}
+
+	String out;
+	int pos = 0;
+	for (const WGSLEdit &edit : edits) {
+		if (edit.begin < pos) {
+			continue;
+		}
+		out += r_wgsl.substr(pos, edit.begin - pos) + edit.text;
+		pos = edit.end;
+	}
+	out += r_wgsl.substr(pos);
+
+	// The declarations.
+	Vector<String> out_lines = out.split("\n");
+	current = String();
+	for (String &raw : out_lines) {
 		const String line = raw.strip_edges();
 		if (!current.is_empty()) {
 			if (line.begins_with("}")) {
 				current = String();
 				continue;
 			}
-			String field = line.trim_suffix(",");
-			String attributes;
-			while (field.begins_with("@")) {
-				const int close = field.find(")");
-				if (close < 0) {
-					break;
-				}
-				attributes += field.substr(0, close + 1) + " ";
-				field = field.substr(close + 1).strip_edges();
+			const int colon = raw.find(":");
+			if (colon <= 0) {
+				continue;
 			}
-			const int colon = field.find(":");
-			if (colon > 0) {
-				structs[current].names.push_back(field.substr(0, colon).strip_edges());
-				structs[current].attributes.push_back(attributes);
-				structs[current].types.push_back(field.substr(colon + 1).strip_edges());
+			const String head = raw.substr(0, colon);
+			int name_begin = head.length();
+			while (name_begin > 0 && head[name_begin - 1] == ' ') {
+				name_begin--;
 			}
-			continue;
-		}
-		if (line.begins_with("struct ") && line.ends_with("{")) {
+			int name_start = name_begin;
+			while (name_start > 0 && _wgsl_is_ident_char(head[name_start - 1])) {
+				name_start--;
+			}
+			const String name = head.substr(name_start, name_begin - name_start);
+			const HashMap<String, String>::ConstIterator type_it = field_types.find(name);
+			String type = raw.substr(colon + 1).strip_edges().trim_suffix(",").strip_edges();
+			int columns, rows;
+			if (type_it && _wgsl_matrix_parts(type, columns, rows)) {
+				raw = head + vformat(": array<vec%d<f32>, %du>%s", rows, columns, raw.strip_edges().ends_with(",") ? "," : "");
+			}
+		} else if (line.begins_with("struct ") && line.ends_with("{")) {
 			current = line.substr(7, line.length() - 8).strip_edges();
-			structs[current] = WGSLStructInfo();
-			struct_order.push_back(current);
-			continue;
-		}
-		const int var_pos = line.find("var<uniform> ");
-		if (var_pos >= 0) {
-			const String declaration = line.substr(var_pos + 13).trim_suffix(";");
-			const int colon = declaration.find(":");
-			if (colon > 0) {
-				uniforms[declaration.substr(0, colon).strip_edges()] = declaration.substr(colon + 1).strip_edges();
-			}
 		}
 	}
-	Vector<String> affected;
-	for (const KeyValue<String, String> &uniform : uniforms) {
-		if (_wgsl_has_matrix(uniform.value, structs)) {
-			affected.push_back(uniform.key);
-		}
+	out = String("\n").join(out_lines);
+	Vector<String> helper_names;
+	for (const KeyValue<String, String> &helper : helpers) {
+		helper_names.push_back(helper.key);
 	}
-	if (affected.is_empty()) {
-		return;
+	helper_names.sort();
+	out = out.strip_edges(false, true) + "\n";
+	for (const String &name : helper_names) {
+		out += "\n" + helpers[name];
 	}
-
-	// 1. Reads of the affected variables (outside of their declaration) give matrices again.
-	String out;
-	int pos = 0;
-	while (pos < r_wgsl.length()) {
-		// The next whole-word occurrence of one of the variables.
-		int best = -1;
-		String best_name;
-		for (const String &name : affected) {
-			int from = pos;
-			while (true) {
-				const int found = r_wgsl.find(name, from);
-				if (found < 0) {
-					break;
-				}
-				const bool word_start = found == 0 || !_wgsl_is_ident_char(r_wgsl[found - 1]);
-				const bool word_end = found + name.length() >= r_wgsl.length() || !_wgsl_is_ident_char(r_wgsl[found + name.length()]);
-				if (word_start && word_end) {
-					if (best < 0 || found < best) {
-						best = found;
-						best_name = name;
-					}
-					break;
-				}
-				from = found + 1;
-			}
-		}
-		if (best < 0) {
-			break;
-		}
-		const int line_start = r_wgsl.rfind("\n", best) + 1;
-		int line_end = r_wgsl.find("\n", best);
-		if (line_end < 0) {
-			line_end = r_wgsl.length();
-		}
-		const bool is_declaration = r_wgsl.substr(line_start, line_end - line_start).contains("var<uniform>");
-		const bool is_member = best > 0 && r_wgsl[best - 1] == '.';
-		const int path_end = _wgsl_scan_path(r_wgsl, best + best_name.length());
-		out += r_wgsl.substr(pos, best - pos);
-		const String expression = r_wgsl.substr(best, path_end - best);
-		String type;
-		if (!is_declaration && !is_member) {
-			type = _wgsl_walk_path(uniforms[best_name], r_wgsl.substr(best + best_name.length(), path_end - best - best_name.length()), structs);
-		}
-		if (!type.is_empty() && _wgsl_has_matrix(type, structs)) {
-			out += _wgsl_expand(expression, type, structs);
-		} else {
-			out += expression;
-		}
-		pos = path_end;
-	}
-	out += r_wgsl.substr(pos);
-
-	// 2. The twin structs, and the variables declared with them.
-	HashSet<String> mirrored;
-	Vector<String> mirror_order;
-	Vector<String> pending;
-	for (const String &name : affected) {
-		pending.push_back(uniforms[name]);
-	}
-	while (!pending.is_empty()) {
-		String type = pending[pending.size() - 1];
-		pending.resize(pending.size() - 1);
-		String element, count;
-		while (_wgsl_array_parts(type, element, count)) {
-			type = element;
-		}
-		if (structs.has(type) && _wgsl_has_matrix(type, structs) && !mirrored.has(type)) {
-			mirrored.insert(type);
-			mirror_order.push_back(type);
-			for (const String &field_type : structs[type].types) {
-				pending.push_back(field_type);
-			}
-		}
-	}
-	String twins;
-	// Declaration order matters in WGSL only for readability, but keep the dependencies first anyway.
-	for (int i = mirror_order.size() - 1; i >= 0; i--) {
-		const WGSLStructInfo &info = structs[mirror_order[i]];
-		twins += vformat("struct %s_u {\n", mirror_order[i]);
-		for (int f = 0; f < info.names.size(); f++) {
-			twins += vformat("  %s%s : %s,\n", info.attributes[f], info.names[f], _wgsl_mirror_type(info.types[f], structs));
-		}
-		twins += "}\n\n";
-	}
-	for (const String &name : affected) {
-		const String declaration = vformat("%s : %s;", name, uniforms[name]);
-		out = out.replace(declaration, vformat("%s : %s;", name, _wgsl_mirror_type(uniforms[name], structs)));
-	}
-	int first_declaration = out.length();
-	for (const String &name : affected) {
-		const int found = out.find("var<uniform> " + name + " ");
-		if (found >= 0) {
-			first_declaration = MIN(first_declaration, found);
-		}
-	}
-	const int insert_at = out.rfind("\n", first_declaration) + 1;
-	r_wgsl = out.substr(0, insert_at) + twins + out.substr(insert_at);
+	r_wgsl = out;
 }
 
 // Converts SPIR-V to WGSL with the Tint command line tool (GODOT_TINT_PATH). Browsers only accept WGSL, so the
@@ -922,7 +839,7 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 		}
 	}
 	r_wgsl = r_wgsl.replace("var<immediate> ", vformat("@group(0) @binding(%d) var<uniform> ", RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING));
-	_wgsl_uniform_matrices_to_vectors(r_wgsl);
+	_wgsl_matrix_fields_to_vectors(r_wgsl);
 	return !r_wgsl.is_empty();
 }
 #endif
