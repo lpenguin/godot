@@ -34,6 +34,7 @@
 
 #include "core/io/file_access.h"
 #include "core/os/os.h"
+#include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
@@ -500,6 +501,151 @@ Vector<uint8_t> _flip_vertex_y(const Vector<uint8_t> &p_spirv) {
 }
 
 #ifndef WEB_ENABLED
+
+// Firefox (wgpu, Direct3D 12) mis-reads a whole struct that is copied out of a uniform buffer when it contains matrices:
+// the matrices come out transposed (mat3x4 even with its elements shuffled). Tint writes exactly that for the scene
+// data (`let v = scene_data_block.data;`). Reading the members one by one is correct everywhere, so such a copy is
+// rewritten into a constructor call that loads each member from the buffer.
+struct WGSLStructInfo {
+	Vector<String> names;
+	Vector<String> types;
+};
+
+bool _wgsl_type_has_matrix(const String &p_type, const HashMap<String, WGSLStructInfo> &p_structs, HashSet<String> &r_seen) {
+	const String type = p_type.strip_edges();
+	if (type.begins_with("mat")) {
+		return true;
+	}
+	if (type.begins_with("array<")) {
+		String inner = type.substr(6, type.length() - 7);
+		const int comma = inner.rfind(",");
+		if (comma >= 0) {
+			inner = inner.substr(0, comma);
+		}
+		return _wgsl_type_has_matrix(inner, p_structs, r_seen);
+	}
+	const HashMap<String, WGSLStructInfo>::ConstIterator it = p_structs.find(type);
+	if (it && !r_seen.has(type)) {
+		r_seen.insert(type);
+		for (const String &field_type : it->value.types) {
+			if (_wgsl_type_has_matrix(field_type, p_structs, r_seen)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+String _wgsl_expand_copy(const String &p_expr, const String &p_type, const HashMap<String, WGSLStructInfo> &p_structs) {
+	const String type = p_type.strip_edges();
+	HashSet<String> seen;
+	const HashMap<String, WGSLStructInfo>::ConstIterator it = p_structs.find(type);
+	if (it && _wgsl_type_has_matrix(type, p_structs, seen)) {
+		Vector<String> parts;
+		for (int i = 0; i < it->value.names.size(); i++) {
+			parts.push_back(_wgsl_expand_copy(p_expr + "." + it->value.names[i], it->value.types[i], p_structs));
+		}
+		return type + "(" + String(", ").join(parts) + ")";
+	}
+	if (type.begins_with("array<")) {
+		String inner = type.substr(6, type.length() - 7);
+		const int comma = inner.rfind(",");
+		if (comma >= 0) {
+			const String count_text = inner.substr(comma + 1).strip_edges().trim_suffix("u");
+			inner = inner.substr(0, comma).strip_edges();
+			HashSet<String> inner_seen;
+			if (count_text.is_valid_int() && _wgsl_type_has_matrix(inner, p_structs, inner_seen)) {
+				Vector<String> parts;
+				for (int i = 0; i < count_text.to_int(); i++) {
+					parts.push_back(_wgsl_expand_copy(vformat("%s[%du]", p_expr, i), inner, p_structs));
+				}
+				return type + "(" + String(", ").join(parts) + ")";
+			}
+		}
+	}
+	return p_expr;
+}
+
+void _wgsl_split_uniform_struct_copies(String &r_wgsl) {
+	HashMap<String, WGSLStructInfo> structs;
+	HashMap<String, String> uniforms;
+	Vector<String> lines = r_wgsl.split("\n");
+	String current;
+	for (const String &raw : lines) {
+		const String line = raw.strip_edges();
+		if (!current.is_empty()) {
+			if (line.begins_with("}")) {
+				current = String();
+				continue;
+			}
+			String field = line.trim_suffix(",");
+			while (field.begins_with("@")) {
+				const int close = field.find(")");
+				if (close < 0) {
+					break;
+				}
+				field = field.substr(close + 1).strip_edges();
+			}
+			const int colon = field.find(":");
+			if (colon > 0) {
+				structs[current].names.push_back(field.substr(0, colon).strip_edges());
+				structs[current].types.push_back(field.substr(colon + 1).strip_edges());
+			}
+		} else if (line.begins_with("struct ") && line.ends_with("{")) {
+			current = line.substr(7, line.length() - 8).strip_edges();
+			structs[current] = WGSLStructInfo();
+		}
+		const int var_pos = line.find("var<uniform> ");
+		if (var_pos >= 0) {
+			const String declaration = line.substr(var_pos + 13).trim_suffix(";");
+			const int colon = declaration.find(":");
+			if (colon > 0) {
+				uniforms[declaration.substr(0, colon).strip_edges()] = declaration.substr(colon + 1).strip_edges();
+			}
+		}
+	}
+	bool changed = false;
+	for (String &raw : lines) {
+		const String line = raw.strip_edges();
+		if (!line.begins_with("let ") || !line.ends_with(";")) {
+			continue;
+		}
+		const int equals = line.find(" = ");
+		if (equals < 0) {
+			continue;
+		}
+		const String name = line.substr(4, equals - 4);
+		const String expr = line.substr(equals + 3, line.length() - equals - 4).strip_edges();
+		const Vector<String> path = expr.split(".");
+		if (path.size() < 2 || !uniforms.has(path[0])) {
+			continue;
+		}
+		String type = uniforms[path[0]];
+		bool valid = true;
+		for (int i = 1; i < path.size() && valid; i++) {
+			const HashMap<String, WGSLStructInfo>::ConstIterator it = structs.find(type);
+			valid = false;
+			if (it) {
+				const int field = it->value.names.find(path[i]);
+				if (field >= 0) {
+					type = it->value.types[field];
+					valid = true;
+				}
+			}
+		}
+		HashSet<String> seen;
+		if (!valid || !structs.has(type) || !_wgsl_type_has_matrix(type, structs, seen)) {
+			continue;
+		}
+		const String indent = raw.substr(0, raw.length() - raw.strip_edges(true, false).length());
+		raw = indent + vformat("let %s = %s;", name, _wgsl_expand_copy(expr, type, structs));
+		changed = true;
+	}
+	if (changed) {
+		r_wgsl = String("\n").join(lines);
+	}
+}
+
 // Converts SPIR-V to WGSL with the Tint command line tool (GODOT_TINT_PATH). Browsers only accept WGSL, so the
 // conversion happens when the container is baked, never in the player.
 bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const String &p_name, String &r_wgsl) {
@@ -558,6 +704,7 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 		}
 	}
 	r_wgsl = r_wgsl.replace("var<immediate> ", vformat("@group(0) @binding(%d) var<uniform> ", RenderingShaderContainerWebGPU::PUSH_CONSTANT_BINDING));
+	_wgsl_split_uniform_struct_copies(r_wgsl);
 	return !r_wgsl.is_empty();
 }
 #endif
