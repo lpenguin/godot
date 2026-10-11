@@ -12,7 +12,7 @@ Goal: run Godot's Forward+ renderer, and the WoodWorks project that uses it, in 
 | Render path (render pass, framebuffer, vertex formats, render pipeline, draws) | done; triangle matches Vulkan pixel for pixel (`test_webgpu_triangle`) |
 | Surface and swap chain, presenting to a `<canvas>` | done, triangle shown in the browser through `RenderingDevice` (`test_webgpu_screen`) |
 | `DisplayServerWeb` creating a WebGPU context instead of WebGL2 | **not done** |
-| Windows display server using this driver (`--rendering-driver webgpu`) | **not done** |
+| Windows display server using this driver (`--rendering-driver webgpu`) | implemented: creates HWND surfaces for the main window and subwindows; Vulkan remains the default when enabled |
 | Built-in Forward+ shaders through Tint | **partial**: see [SHADER_COMPATIBILITY.md](SHADER_COMPATIBILITY.md) (11% as is, 50% without texture arrays) |
 | Push constants in browsers | **not done** (browsers lack `immediates`; plan: emulate with a uniform buffer in the shader container) |
 | Async-friendly waits | not done: waits suspend the wasm stack with JSPI (`webgpu_wait.h`) |
@@ -54,6 +54,34 @@ Desktop with tests (Windows, MSVC):
     scons platform=windows target=editor dev_build=yes webgpu=yes d3d12=no vulkan=yes tests=yes
 
 Copy `thirdparty_local/wgpu-native/lib/wgpu_native.dll` next to the executable.
+
+For an optimized Windows editor without debug symbols, use:
+
+    scons platform=windows target=editor dev_build=no webgpu=yes d3d12=no vulkan=yes tests=yes optimize=speed debug_symbols=no -j6
+
+`wgpu_native_path=<directory>` can point to an existing dependency installation outside this worktree.
+The build links `lib/wgpu_native.dll.lib`; the matching DLL must accompany the executable.
+If AccessKit or ANGLE dependencies are not installed, use `accesskit=no angle=no` to disable those optional drivers explicitly.
+
+Run a project through the Windows display server in PowerShell:
+
+    $env:GODOT_TINT_PATH = (Resolve-Path thirdparty_local/dawn/bin/tint.exe).Path
+    & ./bin/godot.windows.editor.x86_64.console.exe --path C:/path/to/WoodWorks-Gd --rendering-driver webgpu
+
+Tint enables the same SPIR-V-to-WGSL conversion and matrix-field rewrite used by the browser shader bake.
+For browser-limit shader baking, also set `$env:GODOT_WEBGPU_BROWSER_LIMITS = '1'` before launching the scenes.
+Use `--editor` to open the project editor, or `--rendering-driver vulkan` for the Vulkan reference.
+The Windows display server passes the HWND and HINSTANCE to the WebGPU context separately from the Vulkan/D3D12 platform-data union.
+Godot initializes `OS_Windows` with a null HINSTANCE, so WebGPU uses `GetModuleHandle(nullptr)` when needed.
+Without a module handle, wgpu-native cannot create the Vulkan surface backing the swap chain.
+Parallel Tint conversions use a process ID and atomic request counter in their temporary filenames;
+using only the shader name lets stages/variants overwrite or lock each other's SPIR-V and WGSL files on Windows.
+
+Verified on Windows with an RTX 4070 SUPER and WoodWorks PR #133 (`25e51a57`):
+six GPU tests pass with native SPIR-V (1057 assertions), and with Tint plus browser limits (1079 assertions).
+The `still-mat` scene renders 120 frames and all 80 sampled cells match the Vulkan reference.
+The full exported project PCK loads the workshop and live SDF from a directory without project sources.
+Unused SSIL/VoxelGI/SDFGI shader validation errors, LumAlpha8 conversion warnings, and test resource-leak warnings remain.
 
 Browser template (single threaded, tests included):
 

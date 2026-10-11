@@ -36,6 +36,7 @@
 #include "core/os/os.h"
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
+#include "core/templates/safe_refcount.h"
 #include "thirdparty/spirv-reflect/spirv_reflect.h"
 
 const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 11;
@@ -793,8 +794,10 @@ void _wgsl_matrix_fields_to_vectors(String &r_wgsl) {
 // Converts SPIR-V to WGSL with the Tint command line tool (GODOT_TINT_PATH). Browsers only accept WGSL, so the
 // conversion happens when the container is baked, never in the player.
 bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const String &p_name, String &r_wgsl) {
+	// Shader stages and variants are compiled concurrently, including identical names.
+	static SafeNumeric<uint64_t> request_id;
 	const String directory = OS::get_singleton()->get_temp_path();
-	const String stem = directory.path_join("godot_webgpu_" + itos(OS::get_singleton()->get_process_id()) + "_" + p_name.get_file().get_basename().validate_filename());
+	const String stem = directory.path_join("godot_webgpu_" + itos(OS::get_singleton()->get_process_id()) + "_" + itos(request_id.increment()) + "_" + p_name.get_file().get_basename().validate_filename());
 	const String input = stem + ".spv";
 	const String output = stem + ".wgsl";
 	{

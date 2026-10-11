@@ -63,6 +63,9 @@
 #if defined(VULKAN_ENABLED)
 #include "rendering_context_driver_vulkan_windows.h"
 #endif
+#if defined(WEBGPU_ENABLED)
+#include "drivers/webgpu/rendering_context_driver_webgpu.h"
+#endif
 #if defined(D3D12_ENABLED)
 #include "drivers/d3d12/rendering_context_driver_d3d12.h"
 
@@ -7500,7 +7503,17 @@ Error DisplayServerWindows::_create_rendering_context_window(DisplayServerEnums:
 	}
 #endif
 
-	Error err = rendering_context->window_create(p_window_id, &wpd);
+	const void *platform_data = &wpd;
+#ifdef WEBGPU_ENABLED
+	RenderingContextDriverWebGPU::WindowPlatformData webgpu_wpd;
+	if (p_rendering_driver == "webgpu") {
+		webgpu_wpd.window = wd.hWnd;
+		webgpu_wpd.instance = hInstance ? hInstance : GetModuleHandle(nullptr);
+		platform_data = &webgpu_wpd;
+	}
+#endif
+
+	Error err = rendering_context->window_create(p_window_id, platform_data);
 	ERR_FAIL_COND_V_MSG(err != OK, err, vformat("Failed to create %s window.", p_rendering_driver));
 
 	Vector2i off = (wd.multiwindow_fs || (!wd.fullscreen && wd.borderless && wd.maximized)) ? _get_screen_expand_offset(window_get_current_screen(p_window_id)) : Vector2i();
@@ -8041,6 +8054,11 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Dis
 	String rendering_drivers[2];
 	uint32_t rendering_driver_count = 0;
 
+#ifdef WEBGPU_ENABLED
+	if (rendering_driver == "webgpu") {
+		rendering_drivers[rendering_driver_count++] = rendering_driver;
+	}
+#endif
 	if (rendering_driver == "d3d12") {
 		rendering_drivers[rendering_driver_count++] = rendering_driver;
 		if (fallback_to_vulkan) {
@@ -8059,6 +8077,11 @@ DisplayServerWindows::DisplayServerWindows(const String &p_rendering_driver, Dis
 	for (uint32_t i = 0; i < rendering_driver_count; i++) {
 		const String &tested_rendering_driver = rendering_drivers[i];
 
+#ifdef WEBGPU_ENABLED
+		if (tested_rendering_driver == "webgpu") {
+			rendering_context = memnew(RenderingContextDriverWebGPU);
+		}
+#endif
 #ifdef VULKAN_ENABLED
 		if (tested_rendering_driver == "vulkan") {
 			rendering_context = memnew(RenderingContextDriverVulkanWindows);
@@ -8401,6 +8424,9 @@ Vector<String> DisplayServerWindows::get_rendering_drivers_func() {
 #endif
 #ifdef D3D12_ENABLED
 	drivers.push_back("d3d12");
+#endif
+#ifdef WEBGPU_ENABLED
+	drivers.push_back("webgpu");
 #endif
 #ifdef GLES3_ENABLED
 	drivers.push_back("opengl3");
