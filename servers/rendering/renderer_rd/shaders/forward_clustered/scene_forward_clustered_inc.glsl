@@ -228,7 +228,7 @@ directional_lights;
 #define LIGHTMAP_SHADOWMASK_MODE_ONLY 3
 
 struct Lightmap {
-	mat3 lightmap_normal_xform;
+	mat3 normal_xform;
 	vec2 light_texture_size;
 	float exposure_normalization;
 	uint flags;
