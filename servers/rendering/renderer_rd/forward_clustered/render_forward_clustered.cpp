@@ -520,7 +520,13 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 
 			if (shader != prev_shader || pipeline_hash != prev_pipeline_hash) {
 				RSE::PipelineSource pipeline_source = pipeline_key.ubershader ? RSE::PIPELINE_SOURCE_DRAW : RSE::PIPELINE_SOURCE_SPECIALIZATION;
-				pipeline_rd = shader->pipeline_hash_map.get_pipeline(pipeline_key, pipeline_hash, pipeline_key.ubershader, pipeline_source);
+				bool wait_for_pipeline = pipeline_key.ubershader;
+#if defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+				// Without workers compilation has already finished when the task returns.
+				// Collect it now instead of also compiling the fallback ubershader.
+				wait_for_pipeline = wait_for_pipeline || webgpu;
+#endif
+				pipeline_rd = shader->pipeline_hash_map.get_pipeline(pipeline_key, pipeline_hash, wait_for_pipeline, pipeline_source);
 
 				if (pipeline_rd.is_valid()) {
 					pipeline_valid = true;
@@ -4701,6 +4707,13 @@ void RenderForwardClustered::_mesh_compile_pipeline_for_surface(SceneShaderForwa
 }
 
 void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePipelineData &p_surface, const GlobalPipelineData &p_global, RSE::PipelineSource p_source, Vector<ShaderPipelinePair> *r_pipeline_pairs) {
+#if defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	if (webgpu) {
+		// Speculative ubershader compilation blocks the browser's only application thread.
+		// Compile the specialized pipelines needed by actual draws instead.
+		return;
+	}
+#endif
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 	bool octmap_use_storage = !copy_effects->get_raster_effects().has_flag(RendererRD::CopyEffects::RASTER_EFFECT_OCTMAP);
 
