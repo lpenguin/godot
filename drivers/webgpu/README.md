@@ -48,6 +48,34 @@ those slots to CPU staging and sends one `queue.writeBuffer` before submission i
 slot index only after submission, preserving queue ordering when the ring is reused. The draw/dispatch test and the
 dynamic-buffer range test check independent values and preservation of unflushed GPU bytes.
 
+In WoodWorks Free Mode on Firefox 157.0.1 / Windows / RTX 4070 SUPER at 1920×1080, the v11 debug template measured
+35.84 FPS and 393.96 MiB/s of uploads. The matching debug template/bake at `52dd92604d` measured 60.00 FPS and
+32.13 MiB/s, with the same instrumentation and thirty-second sample. Uploads per frame fell from 10.98 to 0.535 MiB.
+These are stationary workshop measurements; carving and other views need their own checks.
+
+## Single-thread browser pipelines
+
+Forward+ WebGPU in a `threads=no` web build skips speculative mesh/surface ubershader pipeline compilation.
+On the first actual draw it waits for the specialized pipeline and collects the completed worker task immediately.
+Without worker threads that task runs synchronously anyway; returning an empty RID unnecessarily requests the fallback
+ubershader as well. Native/threaded builds keep the existing asynchronous compilation and fallback behavior.
+
+Build native and web targets sequentially in one checkout: module registration files and enabled-module headers
+are generated at shared paths. Simultaneous targets can leave the web registration object referencing native-only modules.
+Regenerate for the intended target and rebuild its confirmed stale generated object after a collision.
+Native shader bakes must use the same engine commit as the web template, because `ShaderRD` hashes the engine commit
+into its cache path. Repinning a manifest version without rebuilding the shader bake is insufficient.
+
+## Forward+ tangent frames
+
+WebGPU uses bounded reciprocal-square-root normalization for the unpacked binormal, interpolated TBN vectors, and
+normal-map result. This keeps a degenerate vector finite rather than propagating `normalize(0)` NaNs into lighting;
+Vulkan retains its original normalization. In WoodWorks the chisel view previously had black static surfaces in both
+native WGSL and Firefox. Disabling normal maps removed the defect; substituting a flat normal map did not.
+With bounded normalization, the native capture keeps normal maps, baked lightmaps and shadows enabled and matches
+the Vulkan reference with an average RGB difference of 0.57 byte values. The precise GPU vector that degenerates has
+not been captured; the CPU sample contained valid tangents. See WoodWorks `docs/web_webgpu.md` for the controls.
+
 ## WGSL post-processing (browser builds)
 
 `rendering_shader_container_webgpu.cpp` edits the WGSL that Tint wrote, before it is baked into the shader container:
