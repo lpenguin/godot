@@ -23,6 +23,15 @@
 #define TANGENT_USED
 #endif
 
+vec3 scene_normalize_tbn(vec3 value) {
+#ifdef WEBGPU
+	// Keep degenerate TBN vectors finite instead of propagating normalize(0) NaNs into lighting.
+	return value * inversesqrt(max(dot(value, value), 1e-20));
+#else
+	return normalize(value);
+#endif
+}
+
 layout(push_constant, std430) uniform DrawCall {
 	uint instance_index;
 	uint uv_offset;
