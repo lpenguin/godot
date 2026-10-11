@@ -182,6 +182,7 @@ private:
 	bool immediates_supported = false;
 	uint32_t frame_count = 1;
 	WGPUBuffer push_constant_ring = nullptr;
+	LocalVector<uint8_t> push_constant_upload;
 	uint32_t push_constant_next_slot = 0;
 	static constexpr uint32_t PUSH_CONSTANT_SLOTS = 16384;
 	uint64_t total_memory_used = 0;
@@ -211,6 +212,7 @@ public:
 
 	virtual uint64_t api_trait_get(ApiTrait p_trait) override;
 	virtual void buffer_flush(BufferID p_buffer) override;
+	virtual void buffer_flush_range(BufferID p_buffer, uint64_t p_offset, uint64_t p_size) override;
 	virtual uint32_t shader_get_layout_hash(ShaderID p_shader) override { return 0; }
 
 	virtual Error initialize(uint32_t p_device_index, uint32_t p_frame_count) override;

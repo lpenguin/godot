@@ -943,13 +943,24 @@ uint8_t *RenderingDeviceDriverWebGPU::buffer_persistent_map_advance(BufferID p_b
 }
 
 void RenderingDeviceDriverWebGPU::buffer_flush(BufferID p_buffer) {
+	buffer_flush_range(p_buffer, 0, ((BufferInfo *)p_buffer.id)->size);
+}
+
+void RenderingDeviceDriverWebGPU::buffer_flush_range(BufferID p_buffer, uint64_t p_offset, uint64_t p_size) {
 	BufferInfo *info = (BufferInfo *)p_buffer.id;
 	if (!info->dynamic) {
 		return;
 	}
+	ERR_FAIL_COND(p_offset > info->size || p_size > info->size - p_offset);
+	if (p_size == 0) {
+		return;
+	}
+	// WebGPU requires four-byte alignment. Include adjacent shadow bytes for partial byte updates.
+	const uint64_t begin = p_offset & ~uint64_t(3);
+	const uint64_t end = _align_up(p_offset + p_size, 4);
 	// The write is ordered on the queue before the next submit, and every frame in flight has its own region.
-	const uint64_t offset = (uint64_t)info->frame_idx * info->size;
-	wgpuQueueWriteBuffer(queue, info->buffer, offset, info->shadow.ptr() + offset, info->size);
+	const uint64_t offset = (uint64_t)info->frame_idx * info->size + begin;
+	wgpuQueueWriteBuffer(queue, info->buffer, offset, info->shadow.ptr() + offset, end - begin);
 }
 
 uint64_t RenderingDeviceDriverWebGPU::buffer_get_dynamic_offsets(Span<BufferID> p_buffers) {
@@ -1360,6 +1371,9 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 		}
 	}
 	if (!submit.is_empty()) {
+		if (push_constant_next_slot > 0) {
+			wgpuQueueWriteBuffer(queue, push_constant_ring, 0, push_constant_upload.ptr(), (uint64_t)push_constant_next_slot * RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE);
+		}
 		wgpuQueueSubmit(queue, submit.size(), submit.ptr());
 		for (WGPUCommandBuffer command_buffer : submit) {
 			wgpuCommandBufferRelease(command_buffer);
@@ -2354,8 +2368,9 @@ void RenderingDeviceDriverWebGPU::command_bind_push_constants(CommandBufferID p_
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	const ShaderInfo *shader = (const ShaderInfo *)p_shader.id;
 	if (shader->emulate_push_constants) {
-		// Every call takes a fresh 256-byte slot of the ring; the queue write is ordered before the submit that
-		// contains the draw. The slot offset reaches the shader as the dynamic offset of the group 0 binding.
+		// Every call takes a fresh 256-byte slot. Copy immediately: the caller's data and the command's
+		// partial-update shadow can change before submission. Upload all slots together before queue submit
+		// to avoid a browser IPC message per draw. Group 0 uses the slot's dynamic offset.
 		const uint32_t byte_offset = p_first_index * sizeof(uint32_t);
 		const uint32_t byte_size = p_data.size() * sizeof(uint32_t);
 		ERR_FAIL_COND(byte_offset + byte_size > RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE);
@@ -2365,7 +2380,11 @@ void RenderingDeviceDriverWebGPU::command_bind_push_constants(CommandBufferID p_
 			push_constant_next_slot = PUSH_CONSTANT_SLOTS - 1;
 		}
 		cmd->push_offset = push_constant_next_slot * RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE;
-		wgpuQueueWriteBuffer(queue, push_constant_ring, cmd->push_offset, cmd->push_shadow, RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE);
+		const uint32_t upload_size = cmd->push_offset + RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE;
+		if (push_constant_upload.size() < upload_size) {
+			push_constant_upload.resize(upload_size);
+		}
+		memcpy(push_constant_upload.ptr() + cmd->push_offset, cmd->push_shadow, RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE);
 		push_constant_next_slot++;
 		cmd->shader = shader;
 		cmd->group0_dirty = true;

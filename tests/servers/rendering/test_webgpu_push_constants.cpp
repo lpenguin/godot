@@ -230,6 +230,70 @@ TEST_CASE("[WebGPU][PushConstants] Every draw and dispatch sees its own push con
 	memdelete(rd);
 }
 
+TEST_CASE("[WebGPU][DynamicBuffers] Range flush preserves unflushed GPU bytes across frames") {
+	RenderingContextDriverWebGPU context;
+	if (context.initialize() != OK) {
+		WARN("No WebGPU adapter available, skipping.");
+		return;
+	}
+	RD *rd = memnew(RD);
+	REQUIRE(rd->initialize(&context) == OK);
+	const char *source = R"(
+#version 450
+layout(local_size_x = 8) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input { uint values[]; } input_data;
+layout(set = 0, binding = 1, std430) writeonly buffer Output { uint values[]; } output_data;
+void main() { uint i = gl_GlobalInvocationID.x; output_data.values[i] = input_data.values[i]; }
+)";
+	RID shader = make_shader(rd, { RDC::SHADER_STAGE_COMPUTE }, { source }, "dynamic_buffer_range");
+	REQUIRE(shader.is_valid());
+	RID input = rd->storage_buffer_create(8 * sizeof(uint32_t), {}, {}, RD::BUFFER_CREATION_DYNAMIC_PERSISTENT_BIT);
+	RID output = rd->storage_buffer_create(8 * sizeof(uint32_t));
+	REQUIRE(input.is_valid());
+	REQUIRE(output.is_valid());
+	Vector<RD::Uniform> uniforms;
+	for (uint32_t binding = 0; binding < 2; binding++) {
+		RD::Uniform uniform;
+		uniform.uniform_type = RDC::UNIFORM_TYPE_STORAGE_BUFFER;
+		uniform.binding = binding;
+		uniform.append_id(binding == 0 ? input : output);
+		uniforms.push_back(uniform);
+	}
+	RID uniform_set = rd->uniform_set_create(uniforms, shader, 0);
+	RID pipeline = rd->compute_pipeline_create(shader);
+	REQUIRE(uniform_set.is_valid());
+	REQUIRE(pipeline.is_valid());
+	for (uint32_t frame = 0; frame < 6; frame++) {
+		uint32_t *mapped = (uint32_t *)rd->buffer_persistent_map_advance(input);
+		REQUIRE(mapped != nullptr);
+		// Deliberately dirty the unflushed shadow. A full upload would leak these sentinels to the GPU.
+		for (uint32_t i = 0; i < 8; i++) {
+			mapped[i] = 999;
+		}
+		mapped[2] = 100 + frame;
+		rd->buffer_flush(input, 2 * sizeof(uint32_t), sizeof(uint32_t));
+		RD::ComputeListID list = rd->compute_list_begin();
+		rd->compute_list_bind_compute_pipeline(list, pipeline);
+		rd->compute_list_bind_uniform_set(list, uniform_set, 0);
+		rd->compute_list_dispatch(list, 1, 1, 1);
+		rd->compute_list_end();
+		rd->submit();
+		rd->sync();
+		Vector<uint8_t> bytes = rd->buffer_get_data(output);
+		REQUIRE(bytes.size() == 8 * sizeof(uint32_t));
+		const uint32_t *values = (const uint32_t *)bytes.ptr();
+		for (uint32_t i = 0; i < 8; i++) {
+			CHECK(values[i] == (i == 2 ? 100 + frame : 0));
+		}
+	}
+	rd->free_rid(pipeline);
+	rd->free_rid(uniform_set);
+	rd->free_rid(input);
+	rd->free_rid(output);
+	rd->free_rid(shader);
+	memdelete(rd);
+}
+
 } // namespace TestWebGPUPushConstants
 
 #endif // WEBGPU_ENABLED

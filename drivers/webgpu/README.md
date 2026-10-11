@@ -14,8 +14,8 @@ Goal: run Godot's Forward+ renderer, and the WoodWorks project that uses it, in 
 | `DisplayServerWeb` creating a WebGPU context instead of WebGL2 | done: the WoodWorks web build runs in Chrome and Firefox (see the WoodWorks repository, `docs/web_webgpu.md`) |
 | Windows display server using this driver (`--rendering-driver webgpu`) | implemented: creates HWND surfaces for the main window and subwindows; Vulkan remains the default when enabled |
 | Built-in Forward+ shaders through Tint | **partial**: see [SHADER_COMPATIBILITY.md](SHADER_COMPATIBILITY.md) (11% as is, 50% without texture arrays) |
-| Push constants in browsers | **not done** (browsers lack `immediates`; plan: emulate with a uniform buffer in the shader container) |
-| Async-friendly waits | not done: waits suspend the wasm stack with JSPI (`webgpu_wait.h`) |
+| Push constants in browsers | emulated with a uniform ring and a dynamic offset per draw/dispatch; uploads batched before queue submission |
+| Async-friendly waits | JSPI suspends the wasm stack (`webgpu_wait.h`); Firefox can delay idle-queue callbacks by about 100 ms |
 
 Not planned for now: raytracing, multiview, subpasses, VRS, SDFGI, VoxelGI.
 
@@ -34,6 +34,19 @@ Not planned for now: raytracing, multiview, subpasses, VRS, SDFGI, VoxelGI.
 Debug aids added to the engine: `GODOT_WEBGPU_DUMP_SPIRV=<dir>` (driver: dump what is handed to WebGPU),
 `GODOT_DUMP_SPIRV_DIR=<dir>` (RenderingDevice: dump every SPIR-V module that is compiled), `GODOT_VULKAN_SPIRV_1_3=1`
 (Vulkan driver compiles SPIR-V 1.3 like WebGPU would; Tint cannot read 1.4).
+
+## CPU uploads
+
+The WebGPU driver keeps a CPU shadow for persistent buffers. `RenderingDevice::buffer_flush` accepts an optional
+byte range; buffer updates, Forward+ instance lists (including shadow passes), and canvas batches pass the range they
+actually filled. WebGPU uploads only that range, rounded to four-byte boundaries. Existing calls without a range still
+upload the entire current frame region. The default driver implementation delegates range flushes to its existing
+whole-allocation flush, preserving Vulkan's mapped-memory behavior.
+
+Push constants take separate 256-byte slots immediately when recorded, including partial updates. The driver copies
+those slots to CPU staging and sends one `queue.writeBuffer` before submission instead of one per draw. It resets the
+slot index only after submission, preserving queue ordering when the ring is reused. The draw/dispatch test and the
+dynamic-buffer range test check independent values and preservation of unflushed GPU bytes.
 
 ## WGSL post-processing (browser builds)
 
