@@ -11,7 +11,7 @@ Goal: run Godot's Forward+ renderer, and the WoodWorks project that uses it, in 
 | WoodWorks compute shaders (carve, shaving, surface probe, initial fill/classify) | identical to Vulkan natively and in Chrome 154 (`test_webgpu_parity`) |
 | Render path (render pass, framebuffer, vertex formats, render pipeline, draws) | done; triangle matches Vulkan pixel for pixel (`test_webgpu_triangle`) |
 | Surface and swap chain, presenting to a `<canvas>` | done, triangle shown in the browser through `RenderingDevice` (`test_webgpu_screen`) |
-| `DisplayServerWeb` creating a WebGPU context instead of WebGL2 | **not done** |
+| `DisplayServerWeb` creating a WebGPU context instead of WebGL2 | done: the WoodWorks web build runs in Chrome and Firefox (see the WoodWorks repository, `docs/web_webgpu.md`) |
 | Windows display server using this driver (`--rendering-driver webgpu`) | **not done** |
 | Built-in Forward+ shaders through Tint | **partial**: see [SHADER_COMPATIBILITY.md](SHADER_COMPATIBILITY.md) (11% as is, 50% without texture arrays) |
 | Push constants in browsers | **not done** (browsers lack `immediates`; plan: emulate with a uniform buffer in the shader container) |
@@ -34,6 +34,20 @@ Not planned for now: raytracing, multiview, subpasses, VRS, SDFGI, VoxelGI.
 Debug aids added to the engine: `GODOT_WEBGPU_DUMP_SPIRV=<dir>` (driver: dump what is handed to WebGPU),
 `GODOT_DUMP_SPIRV_DIR=<dir>` (RenderingDevice: dump every SPIR-V module that is compiled), `GODOT_VULKAN_SPIRV_1_3=1`
 (Vulkan driver compiles SPIR-V 1.3 like WebGPU would; Tint cannot read 1.4).
+
+## WGSL post-processing (browser builds)
+
+`rendering_shader_container_webgpu.cpp` edits the WGSL that Tint wrote, before it is baked into the shader container:
+
+* `var<immediate>` (push constants) becomes a uniform buffer at group 0, binding 900 (dynamic offset per draw),
+* storage texture formats browsers lack are replaced by a wider one (the driver allocates the wider format),
+* `_wgsl_matrix_fields_to_vectors`: every matrix field of every struct (3 or 4 rows) is declared as an array of its
+  column vectors and rebuilt at each read. Firefox on Windows (wgpu, Direct3D 12) scrambles matrices that are struct
+  fields (naga writes them as `row_major` HLSL matrices); Chrome does not. The memory layout is the same, so buffers
+  need no change. A Python reference is `tools/web_dev/wgsl_matrix_fields.py` in the WoodWorks repository; check a change
+  by running naga over a baked shader cache (`tools/web_dev/wgsl_check.py` there).
+
+Releases of the browser build are tagged `godot-4.7.2-webgpu-vN`; see `.github/workflows/webgpu_release.yml`.
 
 ## Setting up a machine
 
