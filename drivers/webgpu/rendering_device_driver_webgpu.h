@@ -98,6 +98,10 @@ public:
 		LocalVector<WGPUBindGroupLayout> set_layouts;
 		WGPUPipelineLayout pipeline_layout = nullptr;
 		WGPUShaderModule modules[SHADER_STAGE_MAX] = {};
+#if defined(__EMSCRIPTEN__) && !defined(THREADS_ENABLED)
+		// Keep unrequested variants as WGSL; Firefox otherwise validates thousands of unused modules at startup.
+		Vector<uint8_t> pending_wgsl[SHADER_STAGE_MAX];
+#endif
 		// The overridable constants (specialization constants) each WGSL module declares. A stage rejects the ids it does not know.
 		LocalVector<uint32_t> override_ids[SHADER_STAGE_MAX];
 		bool has_override_ids[SHADER_STAGE_MAX] = {};
@@ -206,6 +210,7 @@ private:
 	void _build_pipeline_constants(const ShaderInfo *p_shader, ShaderStage p_stage, VectorView<PipelineSpecializationConstant> p_specialization_constants, LocalVector<CharString> &p_keys, LocalVector<WGPUConstantEntry> &r_constants);
 	void _release_swap_chain_image(SwapChainInfo *p_swap_chain);
 	bool _map_for_read(BufferInfo *p_buffer);
+	WGPUShaderModule _shader_module(ShaderInfo *p_shader, ShaderStage p_stage);
 
 public:
 	WGPUDevice device_get() const { return device; }

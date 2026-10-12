@@ -910,7 +910,13 @@ bool RenderingDeviceDriverWebGPU::_map_for_read(BufferInfo *p_buffer) {
 	callback_info.mode = WEBGPU_CALLBACK_MODE;
 	callback_info.callback = _on_map;
 	callback_info.userdata1 = &request;
-	_wait_for(wgpuBufferMapAsync(p_buffer->buffer, WGPUMapMode_Read, 0, p_buffer->size, callback_info), request.done);
+	WGPUFuture future = wgpuBufferMapAsync(p_buffer->buffer, WGPUMapMode_Read, 0, p_buffer->size, callback_info);
+#ifdef __EMSCRIPTEN__
+	// Firefox may leave the map request pending until the queue is submitted again. While JSPI waits,
+	// the render loop cannot make that submission. Flush the queue without adding any GPU commands.
+	wgpuQueueSubmit(queue, 0, nullptr);
+#endif
+	_wait_for(future, request.done);
 	if (request.status != WGPUMapAsyncStatus_Success) {
 		return false;
 	}
@@ -1702,6 +1708,37 @@ void RenderingDeviceDriverWebGPU::framebuffer_free(FramebufferID p_framebuffer) 
 
 // ----- Shaders -----
 
+WGPUShaderModule RenderingDeviceDriverWebGPU::_shader_module(ShaderInfo *p_shader, ShaderStage p_stage) {
+#if defined(__EMSCRIPTEN__) && !defined(THREADS_ENABLED)
+	if (!p_shader->modules[p_stage] && !p_shader->pending_wgsl[p_stage].is_empty()) {
+		const Vector<uint8_t> &code = p_shader->pending_wgsl[p_stage];
+		if (!p_shader->has_override_ids[p_stage]) {
+			const String text = String::utf8((const char *)code.ptr(), code.size());
+			p_shader->has_override_ids[p_stage] = true;
+			int at = 0;
+			while ((at = text.find("@id(", at)) >= 0) {
+				uint32_t id = 0;
+				for (int k = at + 4; k < text.length() && text[k] >= '0' && text[k] <= '9'; k++) {
+					id = id * 10 + (text[k] - '0');
+				}
+				p_shader->override_ids[p_stage].push_back(id);
+				at += 4;
+			}
+		}
+		const CharString name = p_shader->name.utf8();
+		WGPUShaderSourceWGSL source = {};
+		source.chain.sType = WGPUSType_ShaderSourceWGSL;
+		source.code.data = (const char *)code.ptr();
+		source.code.length = code.size();
+		WGPUShaderModuleDescriptor descriptor = {};
+		descriptor.label = _sv(name.get_data());
+		descriptor.nextInChain = &source.chain;
+		p_shader->modules[p_stage] = wgpuDeviceCreateShaderModule(device, &descriptor);
+	}
+#endif
+	return p_shader->modules[p_stage];
+}
+
 RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_container(const Ref<RenderingShaderContainer> &p_shader_container, const Vector<ImmutableSampler> &p_immutable_samplers) {
 	ERR_FAIL_COND_V_MSG(!p_immutable_samplers.is_empty(), ShaderID(), "WebGPU driver: immutable samplers are not supported.");
 	const RenderingShaderContainerWebGPU *container = Object::cast_to<RenderingShaderContainerWebGPU>(p_shader_container.ptr());
@@ -1734,6 +1771,12 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 			}
 		}
 
+#if defined(__EMSCRIPTEN__) && !defined(THREADS_ENABLED)
+		if (is_wgsl) {
+			info->pending_wgsl[shader.shader_stage] = shader.code_compressed_bytes;
+			continue;
+		}
+#endif
 		WGPUShaderModuleDescriptor module_desc = {};
 		module_desc.label = _sv(name.get_data());
 		LocalVector<uint32_t> words;
@@ -2646,7 +2689,9 @@ void RenderingDeviceDriverWebGPU::command_render_set_line_width(CommandBufferID 
 RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_create(ShaderID p_shader, VertexFormatID p_vertex_format, RenderPrimitive p_render_primitive, PipelineRasterizationState p_rasterization_state, PipelineMultisampleState p_multisample_state, PipelineDepthStencilState p_depth_stencil_state, PipelineColorBlendState p_blend_state, VectorView<int32_t> p_color_attachments, BitField<PipelineDynamicStateFlags> p_dynamic_state, RenderPassID p_render_pass, uint32_t p_render_subpass, VectorView<PipelineSpecializationConstant> p_specialization_constants) {
 	ShaderInfo *shader = (ShaderInfo *)p_shader.id;
 	const RenderPassInfo *pass = (const RenderPassInfo *)p_render_pass.id;
-	ERR_FAIL_NULL_V(shader->modules[SHADER_STAGE_VERTEX], PipelineID());
+	WGPUShaderModule vertex_module = _shader_module(shader, SHADER_STAGE_VERTEX);
+	ERR_FAIL_NULL_V(vertex_module, PipelineID());
+	WGPUShaderModule fragment_module = _shader_module(shader, SHADER_STAGE_FRAGMENT);
 	ERR_FAIL_COND_V(p_render_subpass != 0 || pass->subpasses.is_empty(), PipelineID());
 	const Subpass &subpass = pass->subpasses[0];
 
@@ -2659,7 +2704,7 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_c
 	WGPURenderPipelineDescriptor desc = {};
 	desc.label = _sv(shader_label.get_data());
 	desc.layout = shader->pipeline_layout;
-	desc.vertex.module = shader->modules[SHADER_STAGE_VERTEX];
+	desc.vertex.module = vertex_module;
 	desc.vertex.entryPoint = _sv("main");
 	desc.vertex.constantCount = vertex_constants.size();
 	desc.vertex.constants = vertex_constants.ptr();
@@ -2757,8 +2802,8 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_c
 		}
 		targets.push_back(target);
 	}
-	if (shader->modules[SHADER_STAGE_FRAGMENT]) {
-		fragment.module = shader->modules[SHADER_STAGE_FRAGMENT];
+	if (fragment_module) {
+		fragment.module = fragment_module;
 		fragment.entryPoint = _sv("main");
 		fragment.constantCount = fragment_constants.size();
 		fragment.constants = fragment_constants.ptr();
@@ -2854,7 +2899,8 @@ void RenderingDeviceDriverWebGPU::_build_pipeline_constants(const ShaderInfo *p_
 
 RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::compute_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants) {
 	ShaderInfo *shader = (ShaderInfo *)p_shader.id;
-	ERR_FAIL_NULL_V(shader->modules[SHADER_STAGE_COMPUTE], PipelineID());
+	WGPUShaderModule compute_module = _shader_module(shader, SHADER_STAGE_COMPUTE);
+	ERR_FAIL_NULL_V(compute_module, PipelineID());
 
 	LocalVector<CharString> keys;
 	LocalVector<WGPUConstantEntry> constants;
@@ -2864,7 +2910,7 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::compute_pipeline_
 	WGPUComputePipelineDescriptor desc = {};
 	desc.label = _sv(shader_label.get_data());
 	desc.layout = shader->pipeline_layout;
-	desc.compute.module = shader->modules[SHADER_STAGE_COMPUTE];
+	desc.compute.module = compute_module;
 	desc.compute.entryPoint = _sv("main");
 	desc.compute.constantCount = constants.size();
 	desc.compute.constants = constants.ptr();

@@ -37,6 +37,20 @@ Debug aids added to the engine: `GODOT_WEBGPU_DUMP_SPIRV=<dir>` (driver: dump wh
 
 ## CPU uploads
 
+### Browser readback and shader startup
+
+After requesting a buffer map, the browser driver submits an empty command list before waiting through JSPI.
+Firefox can otherwise delay the map while the queue is idle and the suspended render loop cannot submit again.
+GPU completion/readback semantics stay intact; no timer or background polling is required.
+In a 15-second lathe drag at 1920×1080, Firefox 157 / RTX 4070 SUPER rendered 12–18 FPS before this change and
+60 FPS with the driver fix. Average map completion fell from 79–93 ms to 4 ms. This is a local controlled drag,
+not a claim about all carving workloads or the published deployment.
+
+Single-thread browser builds retain WGSL and create shader modules, including their override-ID lists, when a
+pipeline first needs the stage. Cached source remains available if modules are destroyed and recreated.
+The local workshop created 241 modules instead of 1992. This reduces unused work, but an improvement in total
+startup time has not yet been demonstrated; needed pipeline compilation and resource loading still take time.
+
 The WebGPU driver keeps a CPU shadow for persistent buffers. `RenderingDevice::buffer_flush` accepts an optional
 byte range; buffer updates, Forward+ instance lists (including shadow passes), and canvas batches pass the range they
 actually filled. WebGPU uploads only that range, rounded to four-byte boundaries. Existing calls without a range still
