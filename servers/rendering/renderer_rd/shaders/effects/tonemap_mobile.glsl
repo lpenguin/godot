@@ -94,7 +94,9 @@ layout(push_constant, std430) uniform Params {
 	vec4 tonemapper_params;
 
 	float output_max_value;
-	float pad[3];
+	float pad0;
+	float pad1;
+	float pad2;
 }
 params;
 

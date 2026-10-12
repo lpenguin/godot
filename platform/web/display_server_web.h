@@ -39,6 +39,11 @@
 #include <emscripten.h>
 #include <emscripten/html5.h>
 
+#ifdef WEBGPU_ENABLED
+class RenderingContextDriverWebGPU;
+class RenderingDevice;
+#endif
+
 class InputEvent;
 class InputEventWithModifiers;
 class NativeMenu;
@@ -62,6 +67,11 @@ private:
 
 #ifdef GLES3_ENABLED
 	EMSCRIPTEN_WEBGL_CONTEXT_HANDLE webgl_ctx = 0;
+#endif
+#ifdef WEBGPU_ENABLED
+	// The canvas is the only window; WebGPU presents it when the frame's task ends.
+	RenderingContextDriverWebGPU *rendering_context = nullptr;
+	RenderingDevice *rendering_device = nullptr;
 #endif
 
 	HashMap<int64_t, CharString> utterance_ids;

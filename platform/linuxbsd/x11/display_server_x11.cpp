@@ -69,6 +69,9 @@
 #ifdef VULKAN_ENABLED
 #include "x11/rendering_context_driver_vulkan_x11.h"
 #endif
+#ifdef WEBGPU_ENABLED
+#include "drivers/webgpu/rendering_context_driver_webgpu.h"
+#endif
 
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #endif
@@ -6322,6 +6325,9 @@ Vector<String> DisplayServerX11::get_rendering_drivers_func() {
 #ifdef VULKAN_ENABLED
 	drivers.push_back("vulkan");
 #endif
+#ifdef WEBGPU_ENABLED
+	drivers.push_back("webgpu");
+#endif
 #ifdef GLES3_ENABLED
 	drivers.push_back("opengl3");
 	drivers.push_back("opengl3_es");
@@ -6664,7 +6670,16 @@ DisplayServerEnums::WindowID DisplayServerX11::_create_window(DisplayServerEnums
 				wpd.vulkan.display = x11_display;
 			}
 #endif
-			Error err = rendering_context->window_create(id, &wpd);
+			const void *platform_data = &wpd;
+#ifdef WEBGPU_ENABLED
+			RenderingContextDriverWebGPU::WindowPlatformData webgpu_wpd; // Has default member values, so it cannot join the union.
+			if (rendering_driver == "webgpu") {
+				webgpu_wpd.window = (void *)wd.x11_window;
+				webgpu_wpd.instance = x11_display;
+				platform_data = &webgpu_wpd;
+			}
+#endif
+			Error err = rendering_context->window_create(id, platform_data);
 			ERR_FAIL_COND_V_MSG(err != OK, DisplayServerEnums::INVALID_WINDOW_ID, vformat("Can't create a %s window", rendering_driver));
 
 			rendering_context->window_set_size(id, win_rect.size.width, win_rect.size.height);
@@ -7113,6 +7128,11 @@ DisplayServerX11::DisplayServerX11(const String &p_rendering_driver, DisplayServ
 		rendering_context = memnew(RenderingContextDriverVulkanX11);
 	}
 #endif // VULKAN_ENABLED
+#if defined(WEBGPU_ENABLED)
+	if (rendering_driver == "webgpu") {
+		rendering_context = memnew(RenderingContextDriverWebGPU);
+	}
+#endif // WEBGPU_ENABLED
 
 	if (rendering_context) {
 		if (rendering_context->initialize() != OK) {

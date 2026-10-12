@@ -198,6 +198,9 @@ private:
 	Size2i cluster_screen_size;
 
 	RID framebuffer;
+#ifdef WEBGPU_ENABLED
+	RID framebuffer_color; // Render pipelines need an attachment in WebGPU.
+#endif
 	RID cluster_render_buffer; // Used for creating.
 	RID cluster_buffer; // Used for rendering.
 	RID element_buffer; // Used for storing, to hint element touches far plane or near plane.

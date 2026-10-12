@@ -520,7 +520,13 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 
 			if (shader != prev_shader || pipeline_hash != prev_pipeline_hash) {
 				RSE::PipelineSource pipeline_source = pipeline_key.ubershader ? RSE::PIPELINE_SOURCE_DRAW : RSE::PIPELINE_SOURCE_SPECIALIZATION;
-				pipeline_rd = shader->pipeline_hash_map.get_pipeline(pipeline_key, pipeline_hash, pipeline_key.ubershader, pipeline_source);
+				bool wait_for_pipeline = pipeline_key.ubershader;
+#if defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+				// Without workers compilation has already finished when the task returns.
+				// Collect it now instead of also compiling the fallback ubershader.
+				wait_for_pipeline = wait_for_pipeline || webgpu;
+#endif
+				pipeline_rd = shader->pipeline_hash_map.get_pipeline(pipeline_key, pipeline_hash, wait_for_pipeline, pipeline_source);
 
 				if (pipeline_rd.is_valid()) {
 					pipeline_valid = true;
@@ -909,7 +915,7 @@ void RenderForwardClustered::_fill_instance_data(RenderListType p_render_list, i
 	}
 
 	if (p_update_buffer && element_total > 0u) {
-		RenderingDevice::get_singleton()->buffer_flush(scene_state.instance_buffer[p_render_list]._get(0u));
+		RenderingDevice::get_singleton()->buffer_flush(scene_state.instance_buffer[p_render_list]._get(0u), p_offset * sizeof(SceneState::InstanceData), element_total * sizeof(SceneState::InstanceData));
 	}
 }
 
@@ -2881,8 +2887,8 @@ void RenderForwardClustered::_render_shadow_append(RID p_framebuffer, const Page
 
 void RenderForwardClustered::_render_shadow_process() {
 	RenderingDevice *rd = RenderingDevice::get_singleton();
-	if (scene_state.instance_buffer[RENDER_LIST_SECONDARY].get_size(0u) > 0u) {
-		rd->buffer_flush(scene_state.instance_buffer[RENDER_LIST_SECONDARY]._get(0u));
+	if (render_list[RENDER_LIST_SECONDARY].elements.size() > 0u) {
+		rd->buffer_flush(scene_state.instance_buffer[RENDER_LIST_SECONDARY]._get(0u), 0, render_list[RENDER_LIST_SECONDARY].elements.size() * sizeof(SceneState::InstanceData));
 	}
 
 	//render shadows one after the other, so this can be done un-barriered and the driver can optimize (as well as allow us to run compute at the same time)
@@ -3348,6 +3354,9 @@ void RenderForwardClustered::_update_render_base_uniform_set() {
 			}
 		}
 
+#ifdef WEBGPU_ENABLED
+		if (!webgpu)
+#endif
 		{
 			RD::Uniform u;
 			u.binding = 18;
@@ -3357,6 +3366,9 @@ void RenderForwardClustered::_update_render_base_uniform_set() {
 			uniforms.push_back(u);
 		}
 
+#ifdef WEBGPU_ENABLED
+		if (!webgpu)
+#endif
 		{
 			RD::Uniform u;
 			u.binding = 19;
@@ -3508,9 +3520,22 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 
 			textures.write[i] = default_tex;
 		}
+#ifdef WEBGPU_ENABLED
+		if (webgpu) {
+			for (int i = 0; i < textures.size(); i++) {
+				uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, LIGHTMAP_TEXTURE_BINDING_WEBGPU + i, textures[i]));
+			}
+		} else {
+#endif
 		RD::Uniform u(RD::UNIFORM_TYPE_TEXTURE, 7, textures);
 		uniforms.push_back(u);
+#ifdef WEBGPU_ENABLED
+		}
+#endif
 	}
+#ifdef WEBGPU_ENABLED
+	if (!webgpu) // VoxelGI needs an array of 3D textures.
+#endif
 	{
 		RD::Uniform u;
 		u.binding = 8;
@@ -3838,6 +3863,15 @@ RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_te
 		uniforms.push_back(u);
 	}
 
+#ifdef WEBGPU_ENABLED
+	if (webgpu) {
+		// No Lightmaps
+		RID default_tex = texture_storage->texture_rd_get_default(RendererRD::TextureStorage::DEFAULT_RD_TEXTURE_2D_ARRAY_WHITE);
+		for (uint32_t i = 0; i < scene_state.max_lightmaps * 2; i++) {
+			uniforms.push_back(RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, LIGHTMAP_TEXTURE_BINDING_WEBGPU + i, default_tex));
+		}
+	} else
+#endif
 	{
 		// No Lightmaps
 		RD::Uniform u;
@@ -3852,6 +3886,9 @@ RID RenderForwardClustered::_setup_sdfgi_render_pass_uniform_set(RID p_albedo_te
 		uniforms.push_back(u);
 	}
 
+#ifdef WEBGPU_ENABLED
+	if (!webgpu)
+#endif
 	{
 		// No VoxelGIs
 		RD::Uniform u;
@@ -4670,6 +4707,13 @@ void RenderForwardClustered::_mesh_compile_pipeline_for_surface(SceneShaderForwa
 }
 
 void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePipelineData &p_surface, const GlobalPipelineData &p_global, RSE::PipelineSource p_source, Vector<ShaderPipelinePair> *r_pipeline_pairs) {
+#if defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	if (webgpu) {
+		// Speculative ubershader compilation blocks the browser's only application thread.
+		// Compile the specialized pipelines needed by actual draws instead.
+		return;
+	}
+#endif
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 	bool octmap_use_storage = !copy_effects->get_raster_effects().has_flag(RendererRD::CopyEffects::RASTER_EFFECT_OCTMAP);
 
@@ -5102,6 +5146,9 @@ void RenderForwardClustered::_update_shader_quality_settings() {
 
 RenderForwardClustered::RenderForwardClustered() {
 	singleton = this;
+#ifdef WEBGPU_ENABLED
+	webgpu = RD::get_singleton()->get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU;
+#endif
 
 	/* SCENE SHADER */
 
@@ -5127,6 +5174,12 @@ RenderForwardClustered::RenderForwardClustered() {
 		{
 			//lightmaps
 			scene_state.max_lightmaps = MAX_LIGHTMAPS;
+#ifdef WEBGPU_ENABLED
+			if (webgpu) {
+				// No arrays of textures in WebGPU: the shader gets one binding per lightmap texture (two lightmaps -> four textures).
+				scene_state.max_lightmaps = MAX_LIGHTMAPS_WEBGPU;
+			}
+#endif
 			defines += "\n#define MAX_LIGHTMAP_TEXTURES " + itos(scene_state.max_lightmaps) + "\n";
 			defines += "\n#define MAX_LIGHTMAPS " + itos(scene_state.max_lightmaps) + "\n";
 
@@ -5169,6 +5222,11 @@ RenderForwardClustered::RenderForwardClustered() {
 
 		RD::TextureFormat tformat;
 		tformat.format = RD::DATA_FORMAT_R8_UNORM;
+#ifdef WEBGPU_ENABLED
+		if (webgpu) {
+			tformat.format = RD::DATA_FORMAT_R8G8B8A8_UNORM; // WebGPU has no r8 storage textures (the shader writes rgba8 there).
+		}
+#endif
 		tformat.width = 1024;
 		tformat.height = 1024;
 		tformat.usage_bits = RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT;

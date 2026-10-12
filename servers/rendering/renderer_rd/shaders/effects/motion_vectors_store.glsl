@@ -13,7 +13,8 @@ layout(rg16f, set = 0, binding = 1) uniform restrict writeonly image2D velocity_
 layout(push_constant, std430) uniform Params {
 	highp mat4 reprojection_matrix;
 	vec2 resolution;
-	uint pad[2];
+	uint pad0;
+	uint pad1;
 }
 params;
 

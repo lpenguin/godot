@@ -76,7 +76,13 @@ layout(push_constant, std430) uniform Params {
 	float glow_map_strength;
 
 	uint glow_mode;
-	float glow_levels[7];
+	float glow_levels0;
+	float glow_levels1;
+	float glow_levels2;
+	float glow_levels3;
+	float glow_levels4;
+	float glow_levels5;
+	float glow_levels6;
 
 	float exposure;
 	float white;
@@ -372,32 +378,32 @@ vec3 gather_glow(SAMPLER_FORMAT tex, vec2 uv) { // sample all selected glow leve
 
 	vec3 glow = vec3(0.0f);
 
-	if (params.glow_levels[0] > 0.0001) {
-		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 0).rgb * params.glow_levels[0];
+	if (params.glow_levels0 > 0.0001) {
+		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 0).rgb * params.glow_levels0;
 	}
 
-	if (params.glow_levels[1] > 0.0001) {
-		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 1).rgb * params.glow_levels[1];
+	if (params.glow_levels1 > 0.0001) {
+		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 1).rgb * params.glow_levels1;
 	}
 
-	if (params.glow_levels[2] > 0.0001) {
-		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 2).rgb * params.glow_levels[2];
+	if (params.glow_levels2 > 0.0001) {
+		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 2).rgb * params.glow_levels2;
 	}
 
-	if (params.glow_levels[3] > 0.0001) {
-		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 3).rgb * params.glow_levels[3];
+	if (params.glow_levels3 > 0.0001) {
+		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 3).rgb * params.glow_levels3;
 	}
 
-	if (params.glow_levels[4] > 0.0001) {
-		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 4).rgb * params.glow_levels[4];
+	if (params.glow_levels4 > 0.0001) {
+		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 4).rgb * params.glow_levels4;
 	}
 
-	if (params.glow_levels[5] > 0.0001) {
-		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 5).rgb * params.glow_levels[5];
+	if (params.glow_levels5 > 0.0001) {
+		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 5).rgb * params.glow_levels5;
 	}
 
-	if (params.glow_levels[6] > 0.0001) {
-		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 6).rgb * params.glow_levels[6];
+	if (params.glow_levels6 > 0.0001) {
+		glow += GLOW_TEXTURE_SAMPLE(tex, uv, 6).rgb * params.glow_levels6;
 	}
 
 	glow = glow * params.luminance_multiplier;

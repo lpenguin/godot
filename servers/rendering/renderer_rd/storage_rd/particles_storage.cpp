@@ -1101,7 +1101,12 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 				RD::Uniform u;
 				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 				u.binding = 0;
-				for (uint32_t i = 0; i < ParticlesFrameParams::MAX_3D_TEXTURES; i++) {
+#ifdef WEBGPU_ENABLED
+				const uint32_t vector_field_bindings = 1; // No binding arrays in WebGPU.
+#else
+				const uint32_t vector_field_bindings = ParticlesFrameParams::MAX_3D_TEXTURES;
+#endif
+				for (uint32_t i = 0; i < vector_field_bindings; i++) {
 					RID rd_tex;
 					if (i < collision_3d_textures_used) {
 						if (TextureStorage::get_singleton()->texture_get_type(collision_3d_textures[i]) == TextureStorage::TYPE_3D) {

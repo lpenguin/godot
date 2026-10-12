@@ -71,6 +71,10 @@ class RenderForwardClustered : public RendererSceneRenderRD {
 		SDFGI_MAX_CASCADES = 8,
 		MAX_VOXEL_GI_INSTANCESS = 8,
 		MAX_LIGHTMAPS = 8,
+#ifdef WEBGPU_ENABLED
+		MAX_LIGHTMAPS_WEBGPU = 2, // Textures are individual bindings there, see scene_forward_clustered_inc.glsl.
+		LIGHTMAP_TEXTURE_BINDING_WEBGPU = 40,
+#endif
 		MAX_VOXEL_GI_INSTANCESS_PER_INSTANCE = 2,
 		INSTANCE_DATA_BUFFER_MIN_SIZE = 4096
 	};
@@ -173,6 +177,9 @@ private:
 	RID render_base_uniform_set;
 
 	uint64_t lightmap_texture_array_version = 0xFFFFFFFF;
+#ifdef WEBGPU_ENABLED
+	bool webgpu = false; // No arrays of textures, no VoxelGI.
+#endif
 
 	void _update_render_base_uniform_set();
 	RID _setup_sdfgi_render_pass_uniform_set(RID p_albedo_texture, RID p_emission_texture, RID p_emission_aniso_texture, RID p_geom_facing_texture, const RendererRD::MaterialStorage::Samplers &p_samplers, uint32_t p_uniform_buffer_index);

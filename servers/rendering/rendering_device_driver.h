@@ -201,6 +201,9 @@ public:
 	virtual uint8_t *buffer_persistent_map_advance(BufferID p_buffer, uint64_t p_frames_drawn) = 0;
 	virtual uint64_t buffer_get_dynamic_offsets(Span<BufferID> p_buffers) = 0;
 	virtual void buffer_flush(BufferID p_buffer) {}
+	// Backends with mapped GPU memory can keep flushing the whole allocation. Upload-based backends
+	// can avoid copying unused capacity when the caller knows which bytes it wrote.
+	virtual void buffer_flush_range(BufferID p_buffer, uint64_t p_offset, uint64_t p_size) { buffer_flush(p_buffer); }
 	// Only for a buffer with BUFFER_USAGE_DEVICE_ADDRESS_BIT.
 	virtual uint64_t buffer_get_device_address(BufferID p_buffer) = 0;
 
@@ -924,6 +927,7 @@ public:
 		DEVICE_VULKAN,
 		DEVICE_DIRECTX,
 		DEVICE_METAL,
+		DEVICE_WEBGPU,
 	};
 
 	struct Capabilities {

@@ -843,6 +843,11 @@ uint32_t RenderSceneBuffersRD::get_depth_usage_bits(bool p_resolve, bool p_msaa,
 }
 
 RD::DataFormat RenderSceneBuffersRD::get_velocity_format() {
+#ifdef WEBGPU_ENABLED
+	if (RD::get_singleton()->get_device_capabilities().device_family == RDD::DEVICE_WEBGPU) {
+		return RD::DATA_FORMAT_R16G16B16A16_SFLOAT; // RG16F cannot be used as a storage texture.
+	}
+#endif
 	return RD::DATA_FORMAT_R16G16_SFLOAT;
 }
 
