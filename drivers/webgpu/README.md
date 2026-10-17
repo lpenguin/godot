@@ -45,6 +45,10 @@ waits for that staging buffer via `mapAsync`. WebGPU opts into this path through
 Recording resumes in the same frame without recycling resources or advancing staging allocations. No temporary
 queue-wide fence is registered for each readback; the normal frame fence still protects the full frame.
 This avoids Firefox's approximately 100 ms queue-completion notification delay for every mesh buffer.
+It does not fix Firefox's notification delivery itself: in the v14 Firefox 158 workshop test, mapping callbacks
+also reach 100 ms, tool readbacks still take 1.5-2.6 seconds and some selections retain the 20 FPS plateau.
+No periodic callback pump or frame-fence removal is included. See WoodWorks PR #133, `docs/web_webgpu.md` section 11,
+for the eight-switch measurements; v14's artifacts are built from engine commit `e60a1a9626`.
 The mid-frame readback regression checks repeated unsynchronized uploads/dispatches, partial/full reads,
 mesh-style vertex reads and continued recording before the ordinary submit/sync.
 
