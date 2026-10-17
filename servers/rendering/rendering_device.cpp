@@ -1313,8 +1313,23 @@ Vector<uint8_t> RenderingDevice::buffer_get_data(RID p_buffer, uint32_t p_offset
 
 	draw_graph.add_buffer_get_data(buffer->driver_id, buffer->draw_tracker, tmp_buffer, region);
 
-	// Flush everything so memory can be safely mapped.
-	_flush_and_stall_for_all_frames();
+	if (driver->api_trait_get(RDD::API_TRAIT_BUFFER_READBACK_WITHOUT_FRAME_STALL)) {
+		// Submit the copy before mapping, but keep this frame's resources alive. WebGPU's
+		// buffer_map waits for this staging buffer through mapAsync; a queue-wide fence
+		// would add an unrelated wait (up to 100 ms per buffer in Firefox).
+		_end_frame();
+		execute_chained_cmds(false, {}, {});
+
+		// Resume recording in the same frame. In particular, do not call _begin_frame:
+		// its resource recycling and staging-buffer advancement require a completed frame.
+		// The normal end-of-frame submission still creates the fence protecting all work.
+		driver->begin_segment(frame, frames_drawn++);
+		driver->command_buffer_begin(frames[frame].command_buffer);
+		draw_graph.begin();
+	} else {
+		// Other drivers still need an explicit completion wait before CPU access.
+		_flush_and_stall_for_all_frames();
+	}
 
 	uint8_t *buffer_mem = driver->buffer_map(tmp_buffer);
 	ERR_FAIL_NULL_V(buffer_mem, Vector<uint8_t>());

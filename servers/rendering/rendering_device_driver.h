@@ -907,6 +907,9 @@ public:
 		API_TRAIT_USE_GENERAL_IN_COPY_QUEUES,
 		API_TRAIT_BUFFERS_REQUIRE_TRANSITIONS,
 		API_TRAIT_TEXTURE_OUTPUTS_REQUIRE_CLEARS,
+		// buffer_map() waits for the submitted copy itself. Mid-frame command buffers can be
+		// submitted and recording restarted without resetting/recycling any per-frame resources.
+		API_TRAIT_BUFFER_READBACK_WITHOUT_FRAME_STALL,
 		API_TRAIT_ACCELERATION_STRUCTURE_INSTANCE_SIZE,
 		API_TRAIT_SHADER_GROUP_HANDLE_SIZE,
 		API_TRAIT_SHADER_GROUP_BASE_ALIGNMENT,

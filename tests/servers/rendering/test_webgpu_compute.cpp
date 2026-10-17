@@ -160,6 +160,78 @@ void main() {
 	}
 }
 
+TEST_CASE("[WebGPU][Compute] Mid-frame buffer readback observes pending work and resumes recording") {
+	WebGPUFixture fx;
+	REQUIRE_MESSAGE(fx.init(), "A WebGPU adapter is required for the readback regression test.");
+	RenderingDevice *rd = fx.rd;
+
+	RID shader = fx.create_shader(R"(
+#version 450
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer Data { uint values[]; };
+void main() {
+	uint i = gl_GlobalInvocationID.x;
+	values[i] = values[i] * 3u + i;
+}
+)", "mid_frame_readback");
+	REQUIRE(shader.is_valid());
+	RID pipeline = rd->compute_pipeline_create(shader);
+	REQUIRE(pipeline.is_valid());
+	const uint32_t count = 64;
+	Vector<uint32_t> input;
+	input.resize(count);
+	input.fill(0);
+	RID buffer = rd->storage_buffer_create(count * sizeof(uint32_t), Span<uint8_t>((const uint8_t *)input.ptr(), count * sizeof(uint32_t)));
+	REQUIRE(buffer.is_valid());
+	RenderingDevice::Uniform uniform;
+	uniform.uniform_type = RDC::UNIFORM_TYPE_STORAGE_BUFFER;
+	uniform.binding = 0;
+	uniform.append_id(buffer);
+	Vector<RenderingDevice::Uniform> uniforms;
+	uniforms.push_back(uniform);
+	RID uniform_set = rd->uniform_set_create(uniforms, shader, 0);
+	REQUIRE(uniform_set.is_valid());
+
+	for (uint32_t iteration = 0; iteration < 6; iteration++) {
+		for (uint32_t i = 0; i < count; i++) {
+			input.write[i] = iteration * 1000 + i;
+		}
+		REQUIRE(rd->buffer_update(buffer, 0, count * sizeof(uint32_t), input.ptr()) == OK);
+		RenderingDevice::ComputeListID list = rd->compute_list_begin();
+		rd->compute_list_bind_compute_pipeline(list, pipeline);
+		rd->compute_list_bind_uniform_set(list, uniform_set, 0);
+		rd->compute_list_dispatch(list, 1, 1, 1);
+		rd->compute_list_end();
+
+		// No submit()/sync(): readback must submit the upload and compute as well as its copy.
+		Vector<uint8_t> partial = rd->buffer_get_data(buffer, 7 * sizeof(uint32_t), 13 * sizeof(uint32_t));
+		REQUIRE(partial.size() == 13 * sizeof(uint32_t));
+		const uint32_t *partial_values = (const uint32_t *)partial.ptr();
+		for (uint32_t i = 0; i < 13; i++) {
+			CHECK(partial_values[i] == input[i + 7] * 3 + i + 7);
+		}
+		Vector<uint8_t> full = rd->buffer_get_data(buffer);
+		REQUIRE(full.size() == count * sizeof(uint32_t));
+		const uint32_t *full_values = (const uint32_t *)full.ptr();
+		for (uint32_t i = 0; i < count; i++) {
+			CHECK(full_values[i] == input[i] * 3 + i);
+		}
+
+		// Exercise immutable mesh-style readbacks and deferred frees in the same frame.
+		RID vertex = rd->vertex_buffer_create(full.size(), full);
+		REQUIRE(vertex.is_valid());
+		CHECK(rd->buffer_get_data(vertex) == full);
+		rd->free_rid(vertex);
+	}
+	// The normal frame fence must still protect submissions after the mid-frame splits.
+	rd->submit();
+	rd->sync();
+	rd->free_rid(uniform_set);
+	rd->free_rid(buffer);
+	rd->free_rid(pipeline);
+	rd->free_rid(shader);
+}
+
 TEST_CASE("[WebGPU][Compute] Write-only 3D storage image") {
 	WebGPUFixture fx;
 	if (!fx.init()) {

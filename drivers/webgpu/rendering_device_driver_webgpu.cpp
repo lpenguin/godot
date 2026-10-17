@@ -3122,6 +3122,8 @@ uint64_t RenderingDeviceDriverWebGPU::api_trait_get(ApiTrait p_trait) {
 	switch (p_trait) {
 		case API_TRAIT_HONORS_PIPELINE_BARRIERS:
 			return 0; // WebGPU synchronizes resource usage itself.
+		case API_TRAIT_BUFFER_READBACK_WITHOUT_FRAME_STALL:
+			return 1; // mapAsync waits for the staging copy; queue writes and submissions are ordered.
 		case API_TRAIT_TEXTURE_TRANSFER_ALIGNMENT:
 			return 4;
 		case API_TRAIT_TEXTURE_DATA_ROW_PITCH_STEP:

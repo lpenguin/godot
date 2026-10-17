@@ -39,6 +39,15 @@ Debug aids added to the engine: `GODOT_WEBGPU_DUMP_SPIRV=<dir>` (driver: dump wh
 
 ### Browser readback and shader startup
 
+Synchronous `RenderingDevice::buffer_get_data` submits pending uploads, compute and the staging copy, then
+waits for that staging buffer via `mapAsync`. WebGPU opts into this path through
+`API_TRAIT_BUFFER_READBACK_WITHOUT_FRAME_STALL`; other drivers retain their explicit frame stall.
+Recording resumes in the same frame without recycling resources or advancing staging allocations. No temporary
+queue-wide fence is registered for each readback; the normal frame fence still protects the full frame.
+This avoids Firefox's approximately 100 ms queue-completion notification delay for every mesh buffer.
+The mid-frame readback regression checks repeated unsynchronized uploads/dispatches, partial/full reads,
+mesh-style vertex reads and continued recording before the ordinary submit/sync.
+
 After requesting a buffer map, the browser driver submits an empty command list before waiting through JSPI.
 Firefox can otherwise delay the map while the queue is idle and the suspended render loop cannot submit again.
 GPU completion/readback semantics stay intact; no timer or background polling is required.
