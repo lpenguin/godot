@@ -38,7 +38,9 @@ TEST_FORCE_LINK(test_webgpu_compute)
 #include "core/io/file_access.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
+#include "core/os/thread.h"
 #include "drivers/webgpu/rendering_context_driver_webgpu.h"
+#include "drivers/webgpu/rendering_device_driver_webgpu.h"
 #include "servers/rendering/rendering_device.h"
 
 namespace TestWebGPUCompute {
@@ -281,6 +283,66 @@ TEST_CASE("[WebGPU][Compute] Independent readbacks survive frame reuse and sourc
 		}
 	}
 }
+
+#ifdef THREADS_ENABLED
+struct ConcurrentSubmission {
+	RenderingDeviceDriverWebGPU *driver = nullptr;
+	RenderingDeviceDriver::CommandBufferID command;
+	SafeFlag *start = nullptr;
+	Error error = OK;
+	int submitted = 0;
+};
+
+static void submit_concurrently(void *p_data) {
+	ConcurrentSubmission &state = *(ConcurrentSubmission *)p_data;
+	while (!state.start->is_set()) {
+		OS::get_singleton()->delay_usec(100);
+	}
+	for (int i = 0; i < 96; i++) {
+		if (!state.driver->command_buffer_begin(state.command)) {
+			state.error = ERR_CANT_CREATE;
+			return;
+		}
+		state.driver->command_buffer_end(state.command);
+		state.error = state.driver->command_queue_execute_and_present(RenderingDeviceDriver::CommandQueueID(1), {}, state.command, {}, {}, {});
+		if (state.error != OK) {
+			return;
+		}
+		state.submitted++;
+	}
+}
+
+TEST_CASE("[WebGPU][Compute] Concurrent queue submissions preserve completion bookkeeping") {
+	RenderingContextDriverWebGPU context;
+	REQUIRE(context.initialize() == OK);
+	RenderingDeviceDriverWebGPU driver(&context);
+	REQUIRE(driver.initialize(0, 2) == OK);
+	SafeFlag start;
+	ConcurrentSubmission states[2];
+	Thread threads[2];
+	for (int i = 0; i < 2; i++) {
+		states[i].driver = &driver;
+		states[i].start = &start;
+		states[i].command = driver.command_buffer_create({});
+		threads[i].start(submit_concurrently, &states[i]);
+	}
+	start.set();
+	for (Thread &thread : threads) {
+		thread.wait_to_finish();
+	}
+	for (ConcurrentSubmission &state : states) {
+		CHECK(state.error == OK);
+		CHECK(state.submitted == 96);
+		// WebGPU's placeholder command pools do not own their command bookkeeping.
+		memdelete((RenderingDeviceDriverWebGPU::CommandBufferInfo *)state.command.id);
+	}
+	RenderingDeviceDriver::FenceID fence = driver.fence_create();
+	REQUIRE(driver.command_queue_execute_and_present(RenderingDeviceDriver::CommandQueueID(1), {}, {}, {}, fence, {}) == OK);
+	driver.fence_wait(fence);
+	CHECK(((RenderingDeviceDriverWebGPU::FenceInfo *)fence.id)->done.is_set());
+	driver.fence_free(fence);
+}
+#endif
 
 TEST_CASE("[WebGPU][Compute] Write-only 3D storage image") {
 	WebGPUFixture fx;

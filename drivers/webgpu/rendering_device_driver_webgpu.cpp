@@ -111,7 +111,7 @@ void _on_independent_map(WGPUMapAsyncStatus p_status, WGPUStringView p_message, 
 }
 
 void _on_work_done(WGPUQueueWorkDoneStatus p_status, WGPUStringView p_message, void *p_userdata1, void *p_userdata2) {
-	*(volatile bool *)p_userdata1 = true;
+	((SafeFlag *)p_userdata1)->set();
 }
 
 WGPUTextureFormat _to_wgpu_format(RenderingDeviceCommons::DataFormat p_format) {
@@ -735,7 +735,8 @@ RenderingDeviceDriverWebGPU::RenderingDeviceDriverWebGPU(RenderingContextDriverW
 }
 
 RenderingDeviceDriverWebGPU::~RenderingDeviceDriverWebGPU() {
-	if (submission_progress.pending && !submission_progress.done) {
+	MutexLock lock(submission_mutex);
+	if (submission_progress.pending && !submission_progress.done.is_set()) {
 		_wait_for(submission_progress.future, submission_progress.done);
 	}
 	if (queue) {
@@ -749,6 +750,19 @@ RenderingDeviceDriverWebGPU::~RenderingDeviceDriverWebGPU() {
 
 void RenderingDeviceDriverWebGPU::_wait_for(WGPUFuture p_future, const volatile bool &p_done) {
 	webgpu_wait(context_driver->instance_get(), device, p_future, p_done);
+}
+
+void RenderingDeviceDriverWebGPU::_wait_for(WGPUFuture p_future, const SafeFlag &p_done) {
+#ifdef __EMSCRIPTEN__
+	WGPUFutureWaitInfo info = {};
+	info.future = p_future;
+	wgpuInstanceWaitAny(context_driver->instance_get(), 1, &info, UINT64_MAX);
+#else
+	while (!p_done.is_set()) {
+		wgpuDevicePoll(device, true, nullptr);
+		wgpuInstanceProcessEvents(context_driver->instance_get());
+	}
+#endif
 }
 
 Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t p_frame_count) {
@@ -1432,6 +1446,9 @@ RenderingDeviceDriver::CommandQueueID RenderingDeviceDriverWebGPU::command_queue
 }
 
 Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueueID p_cmd_queue, VectorView<SemaphoreID> p_wait_semaphores, VectorView<CommandBufferID> p_cmd_buffers, VectorView<SemaphoreID> p_cmd_semaphores, FenceID p_cmd_fence, VectorView<SwapChainID> p_swap_chains) {
+	// Transfer workers can submit from loader threads while the render thread submits a frame.
+	// Serialize queue submission and its completion-marker bookkeeping as one transaction.
+	MutexLock lock(submission_mutex);
 	LocalVector<WGPUCommandBuffer> submit;
 	for (uint32_t i = 0; i < p_cmd_buffers.size(); i++) {
 		CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffers[i].id;
@@ -1468,7 +1485,7 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 		callback_info.mode = WEBGPU_CALLBACK_MODE;
 		callback_info.callback = _on_work_done;
 		callback_info.userdata1 = (void *)&fence->done;
-		fence->done = false;
+		fence->done.clear();
 		fence->future = wgpuQueueOnSubmittedWorkDone(queue, callback_info);
 		fence->pending = true;
 	}
@@ -1481,7 +1498,7 @@ void RenderingDeviceDriverWebGPU::_track_submission_progress() {
 	wgpuDevicePoll(device, false, nullptr);
 	wgpuInstanceProcessEvents(context_driver->instance_get());
 #endif
-	if (submission_progress.pending && submission_progress.done) {
+	if (submission_progress.pending && submission_progress.done.is_set()) {
 		completed_serial = progress_serial;
 		submission_progress.pending = false;
 	}
@@ -1496,7 +1513,7 @@ void RenderingDeviceDriverWebGPU::_track_submission_progress() {
 #endif
 		callback.callback = _on_work_done;
 		callback.userdata1 = (void *)&submission_progress.done;
-		submission_progress.done = false;
+		submission_progress.done.clear();
 		submission_progress.pending = true;
 		progress_serial = submitted_serial;
 		submission_progress.future = wgpuQueueOnSubmittedWorkDone(queue, callback);

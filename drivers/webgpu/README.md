@@ -57,6 +57,13 @@ at least eight submissions, continues rendering while that marker is pending, an
 exhausted. No fence is reported complete early and no periodic empty-submit timer is added. This bounds queued
 resources while avoiding the two-frames-per-delayed-notification bottleneck.
 
+v16 follows the independent code review: a submission mutex serializes native render/loader queue submissions and
+their shared progress marker state. Work-done callbacks publish through `SafeFlag` with acquire/release semantics,
+including explicit fence completion. This prevents concurrent transfer-worker submissions from overwriting a pending
+future or misattributing an older callback to a newer marker. Browser rendering remains single-threaded; the ordinary
+frame path and batching budgets are unchanged. The concurrent-submission regression runs two native threads through
+96 submissions each and then checks an actual completion fence.
+
 `RenderingServer.mesh_surface_get_arrays_async(mesh, surface, callback)` snapshots surface metadata and schedules
 the vertex/attribute/skin/index reads together. It decodes the same arrays as the synchronous API, then defers the
 user callback to the main thread. Invalid surfaces/readback errors produce an empty array. It excludes LOD and blend
@@ -64,7 +71,7 @@ shape arrays. RenderingDevice renderers use asynchronous downloads; the fallback
 data retrieval followed by deferred delivery. The WoodWorks tool retains its model while preparation is pending,
 rejects stale selection callbacks and caches immutable geometry for repeat selection.
 
-Native validation passes 2416 assertions across 14 selected GPU cases, including 48 ordinary frame cycles with
+Native validation passes 2424 assertions across 15 selected GPU cases, including the concurrent submission test and 48 ordinary frame cycles with
 independent partial readbacks, buffer overwrites and source disposal before all callbacks arrive. Tool pose/cache
 and all eight blade-clearance checks pass, including rapid replacement while requests are outstanding. Browser
 performance validation is required separately; no Firefox FPS improvement is claimed from these native results.

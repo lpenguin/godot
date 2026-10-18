@@ -32,6 +32,7 @@
 
 #ifdef WEBGPU_ENABLED
 
+#include "core/os/mutex.h"
 #include "core/templates/local_vector.h"
 #include "core/templates/safe_refcount.h"
 #include "drivers/webgpu/rendering_context_driver_webgpu.h"
@@ -162,7 +163,7 @@ public:
 
 	struct FenceInfo {
 		WGPUFuture future = {};
-		volatile bool done = false;
+		SafeFlag done;
 		bool pending = false;
 	};
 
@@ -194,6 +195,7 @@ private:
 	uint32_t push_constant_next_slot = 0;
 	static constexpr uint32_t PUSH_CONSTANT_SLOTS = 16384;
 	uint64_t total_memory_used = 0;
+	Mutex submission_mutex;
 	FenceInfo submission_progress;
 	uint64_t submitted_serial = 0;
 	uint64_t completed_serial = 0;
@@ -207,6 +209,7 @@ private:
 	FragmentDensityMapCapabilities fdm_capabilities;
 
 	void _wait_for(WGPUFuture p_future, const volatile bool &p_done);
+	void _wait_for(WGPUFuture p_future, const SafeFlag &p_done);
 	void _end_compute_pass(CommandBufferInfo *p_cmd);
 	void _ensure_compute_pass(CommandBufferInfo *p_cmd);
 	void _end_render_pass(CommandBufferInfo *p_cmd);
