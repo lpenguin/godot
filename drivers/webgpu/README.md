@@ -39,15 +39,45 @@ Debug aids added to the engine: `GODOT_WEBGPU_DUMP_SPIRV=<dir>` (driver: dump wh
 
 ### Browser readback and shader startup
 
+The v15 path makes `RenderingDevice::buffer_get_data_async` independent of frame fences. Each request owns a
+dedicated staging buffer; `mapAsync` is registered only after its graph copy is submitted. Browser callbacks only
+publish a completion flag. RenderingDevice consumes ready results on its render thread without waiting, then frees
+the staging buffer and invokes the callable. Pending requests are bounded to 256 / 64 MiB and return `ERR_BUSY`
+on overload. Explicit sync/finalize drains real completions before destroying callback state.
+
+`API_TRAIT_FRAME_RESOURCES_RELEASE_ON_SUBMIT` applies only to WebGPU: CPU upload shadows are copied by queue writes,
+writes are ordered between submissions, and submitted commands retain GPU objects. A resource destroyed after its
+last submission is no longer available to new commands, while the implementation keeps prior submitted uses alive.
+Thus CPU frame bookkeeping can cycle without a GPU-completion notification per frame. Dedicated readback buffers
+are excluded from that recycling until mapped data have actually been consumed. Explicit submit/sync, shutdown and
+legacy asynchronous texture downloads still use real fences; Vulkan and other drivers retain their existing paths.
+
+The driver bounds outstanding command submissions to 32. It coalesces one actual work-done marker for batches of
+at least eight submissions, continues rendering while that marker is pending, and waits only when the budget is
+exhausted. No fence is reported complete early and no periodic empty-submit timer is added. This bounds queued
+resources while avoiding the two-frames-per-delayed-notification bottleneck.
+
+`RenderingServer.mesh_surface_get_arrays_async(mesh, surface, callback)` snapshots surface metadata and schedules
+the vertex/attribute/skin/index reads together. It decodes the same arrays as the synchronous API, then defers the
+user callback to the main thread. Invalid surfaces/readback errors produce an empty array. It excludes LOD and blend
+shape arrays. RenderingDevice renderers use asynchronous downloads; the fallback for other renderers is synchronous
+data retrieval followed by deferred delivery. The WoodWorks tool retains its model while preparation is pending,
+rejects stale selection callbacks and caches immutable geometry for repeat selection.
+
+Native validation passes 2416 assertions across 14 selected GPU cases, including 48 ordinary frame cycles with
+independent partial readbacks, buffer overwrites and source disposal before all callbacks arrive. Tool pose/cache
+and all eight blade-clearance checks pass, including rapid replacement while requests are outstanding. Browser
+performance validation is required separately; no Firefox FPS improvement is claimed from these native results.
+
+The preceding v14 change remains available for synchronous callers:
 Synchronous `RenderingDevice::buffer_get_data` submits pending uploads, compute and the staging copy, then
 waits for that staging buffer via `mapAsync`. WebGPU opts into this path through
 `API_TRAIT_BUFFER_READBACK_WITHOUT_FRAME_STALL`; other drivers retain their explicit frame stall.
 Recording resumes in the same frame without recycling resources or advancing staging allocations. No temporary
-queue-wide fence is registered for each readback; the normal frame fence still protects the full frame.
-This avoids Firefox's approximately 100 ms queue-completion notification delay for every mesh buffer.
+queue-wide fence is registered for each readback. The v14 release retained a normal fence for each full frame.
 It does not fix Firefox's notification delivery itself: in the v14 Firefox 158 workshop test, mapping callbacks
 also reach 100 ms, tool readbacks still take 1.5-2.6 seconds and some selections retain the 20 FPS plateau.
-No periodic callback pump or frame-fence removal is included. See WoodWorks PR #133, `docs/web_webgpu.md` section 11,
+See WoodWorks PR #133, `docs/web_webgpu.md` section 11,
 for the eight-switch measurements; v14's artifacts are built from engine commit `e60a1a9626`.
 The mid-frame readback regression checks repeated unsynchronized uploads/dispatches, partial/full reads,
 mesh-style vertex reads and continued recording before the ordinary submit/sync.

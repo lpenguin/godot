@@ -36,6 +36,7 @@ TEST_FORCE_LINK(test_webgpu_compute)
 #ifdef WEBGPU_ENABLED
 
 #include "core/io/file_access.h"
+#include "core/object/callable_mp.h"
 #include "core/os/os.h"
 #include "drivers/webgpu/rendering_context_driver_webgpu.h"
 #include "servers/rendering/rendering_device.h"
@@ -43,6 +44,12 @@ TEST_FORCE_LINK(test_webgpu_compute)
 namespace TestWebGPUCompute {
 
 using RDC = RenderingDeviceCommons;
+
+static void collect_independent_readback(const PackedByteArray &p_data, Dictionary p_state, int p_index) {
+	Array results = p_state["results"];
+	results[p_index] = p_data;
+	p_state["count"] = int(p_state["count"]) + 1;
+}
 
 // Brings up a standalone (windowless) RenderingDevice on the WebGPU driver.
 struct WebGPUFixture {
@@ -230,6 +237,49 @@ void main() {
 	rd->free_rid(buffer);
 	rd->free_rid(pipeline);
 	rd->free_rid(shader);
+}
+
+TEST_CASE("[WebGPU][Compute] Independent readbacks survive frame reuse and source disposal") {
+	WebGPUFixture fx;
+	REQUIRE(fx.init());
+	RenderingDevice *rd = fx.rd;
+	const int iterations = 48;
+	Array results;
+	results.resize(iterations);
+	Dictionary state;
+	state["results"] = results;
+	state["count"] = 0;
+	Vector<uint32_t> values;
+	values.resize(64);
+	values.fill(0);
+	RID buffer = rd->storage_buffer_create(values.size() * sizeof(uint32_t));
+	REQUIRE(buffer.is_valid());
+	for (int iteration = 0; iteration < iterations; iteration++) {
+		for (int i = 0; i < values.size(); i++) {
+			values.write[i] = iteration * 1000 + i;
+		}
+		REQUIRE(rd->buffer_update(buffer, 0, values.size() * sizeof(uint32_t), values.ptr()) == OK);
+		REQUIRE(rd->buffer_get_data_async(buffer, callable_mp_static(&collect_independent_readback).bind(state, iteration), 7 * sizeof(uint32_t), 13 * sizeof(uint32_t)) == OK);
+		if (iteration == 0) {
+			CHECK(int(state["count"]) == 0); // Registration does not invoke or wait for the callback.
+		}
+		// Exercise the regular frame path, not submit()/sync() (which intentionally waits).
+		rd->swap_buffers(false);
+	}
+	rd->free_rid(buffer);
+	for (int i = 0; i < 1000 && int(state["count"]) != iterations; i++) {
+		rd->swap_buffers(false);
+		OS::get_singleton()->delay_usec(1000);
+	}
+	REQUIRE(int(state["count"]) == iterations);
+	for (int iteration = 0; iteration < iterations; iteration++) {
+		PackedByteArray data = results[iteration];
+		REQUIRE(data.size() == 13 * sizeof(uint32_t));
+		const uint32_t *read = (const uint32_t *)data.ptr();
+		for (uint32_t i = 0; i < 13; i++) {
+			CHECK(read[i] == uint32_t(iteration * 1000) + i + 7);
+		}
+	}
 }
 
 TEST_CASE("[WebGPU][Compute] Write-only 3D storage image") {

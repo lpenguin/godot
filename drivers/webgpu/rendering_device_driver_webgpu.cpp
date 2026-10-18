@@ -102,6 +102,14 @@ void _on_map(WGPUMapAsyncStatus p_status, WGPUStringView p_message, void *p_user
 	}
 }
 
+void _on_independent_map(WGPUMapAsyncStatus p_status, WGPUStringView p_message, void *p_userdata1, void *p_userdata2) {
+	// The dedicated staging buffer stays alive until RenderingDevice consumes this result.
+	// Never call gameplay or RenderingDevice from a browser promise callback.
+	auto *buffer = (RenderingDeviceDriverWebGPU::BufferInfo *)p_userdata1;
+	buffer->map_status = p_status;
+	buffer->map_done.set();
+}
+
 void _on_work_done(WGPUQueueWorkDoneStatus p_status, WGPUStringView p_message, void *p_userdata1, void *p_userdata2) {
 	*(volatile bool *)p_userdata1 = true;
 }
@@ -727,6 +735,9 @@ RenderingDeviceDriverWebGPU::RenderingDeviceDriverWebGPU(RenderingContextDriverW
 }
 
 RenderingDeviceDriverWebGPU::~RenderingDeviceDriverWebGPU() {
+	if (submission_progress.pending && !submission_progress.done) {
+		_wait_for(submission_progress.future, submission_progress.done);
+	}
 	if (queue) {
 		wgpuQueueRelease(queue);
 	}
@@ -893,6 +904,9 @@ bool RenderingDeviceDriverWebGPU::buffer_set_texel_format(BufferID p_buffer, Dat
 
 void RenderingDeviceDriverWebGPU::buffer_free(BufferID p_buffer) {
 	BufferInfo *info = (BufferInfo *)p_buffer.id;
+	if (info->map_pending) {
+		buffer_map_async_poll(p_buffer, true);
+	}
 	total_memory_used -= info->dynamic ? info->total_size : info->size;
 	wgpuBufferDestroy(info->buffer);
 	wgpuBufferRelease(info->buffer);
@@ -931,10 +945,60 @@ uint8_t *RenderingDeviceDriverWebGPU::buffer_map(BufferID p_buffer) {
 	ERR_FAIL_COND_V_MSG(info->dynamic, nullptr, "WebGPU driver: dynamic buffers use buffer_persistent_map_advance().");
 	ERR_FAIL_COND_V_MSG(!info->cpu, nullptr, "WebGPU driver: only CPU buffers can be mapped.");
 	if (info->download && info->gpu_written) {
-		ERR_FAIL_COND_V(!_map_for_read(info), nullptr);
+		if (info->map_pending) {
+			ERR_FAIL_COND_V(buffer_map_async_poll(p_buffer, true) != OK, nullptr);
+		} else {
+			ERR_FAIL_COND_V(!_map_for_read(info), nullptr);
+		}
 		info->gpu_written = false;
 	}
 	return info->shadow.ptrw();
+}
+
+Error RenderingDeviceDriverWebGPU::buffer_map_async(BufferID p_buffer) {
+	BufferInfo *info = (BufferInfo *)p_buffer.id;
+	ERR_FAIL_COND_V(!info->cpu || !info->download || info->map_pending, ERR_INVALID_PARAMETER);
+	info->map_done.clear();
+	info->map_status = WGPUMapAsyncStatus_Error;
+	info->map_pending = true;
+	WGPUBufferMapCallbackInfo callback = {};
+#ifdef __EMSCRIPTEN__
+	callback.mode = WGPUCallbackMode_AllowSpontaneous;
+#else
+	callback.mode = WGPUCallbackMode_AllowProcessEvents;
+#endif
+	callback.callback = _on_independent_map;
+	callback.userdata1 = info;
+	info->map_future = wgpuBufferMapAsync(info->buffer, WGPUMapMode_Read, 0, info->size, callback);
+	return OK;
+}
+
+Error RenderingDeviceDriverWebGPU::buffer_map_async_poll(BufferID p_buffer, bool p_wait) {
+	BufferInfo *info = (BufferInfo *)p_buffer.id;
+	if (!info->map_pending) {
+		return info->gpu_written ? FAILED : OK;
+	}
+#ifdef __EMSCRIPTEN__
+	if (p_wait && !info->map_done.is_set()) {
+		WGPUFutureWaitInfo wait = {};
+		wait.future = info->map_future;
+		wgpuInstanceWaitAny(context_driver->instance_get(), 1, &wait, UINT64_MAX);
+	}
+#else
+	wgpuDevicePoll(device, p_wait, nullptr);
+	wgpuInstanceProcessEvents(context_driver->instance_get());
+#endif
+	if (!info->map_done.is_set()) {
+		return ERR_BUSY;
+	}
+	info->map_pending = false;
+	ERR_FAIL_COND_V_MSG(info->map_status != WGPUMapAsyncStatus_Success, FAILED, "WebGPU asynchronous buffer mapping failed.");
+	const void *mapped = wgpuBufferGetConstMappedRange(info->buffer, 0, info->size);
+	ERR_FAIL_NULL_V(mapped, FAILED);
+	memcpy(info->shadow.ptrw(), mapped, info->size);
+	wgpuBufferUnmap(info->buffer);
+	info->gpu_written = false;
+	return OK;
 }
 
 void RenderingDeviceDriverWebGPU::buffer_unmap(BufferID p_buffer) {
@@ -1386,6 +1450,7 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 		}
 		// Everything recorded so far is on the queue: later writes to the push constant ring are ordered after it.
 		push_constant_next_slot = 0;
+		_track_submission_progress();
 	}
 	for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
 		SwapChainInfo *swap_chain = (SwapChainInfo *)p_swap_chains[i].id;
@@ -1408,6 +1473,39 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 		fence->pending = true;
 	}
 	return OK;
+}
+
+void RenderingDeviceDriverWebGPU::_track_submission_progress() {
+	submitted_serial++;
+#ifndef __EMSCRIPTEN__
+	wgpuDevicePoll(device, false, nullptr);
+	wgpuInstanceProcessEvents(context_driver->instance_get());
+#endif
+	if (submission_progress.pending && submission_progress.done) {
+		completed_serial = progress_serial;
+		submission_progress.pending = false;
+	}
+	// This is bounded backpressure, not a per-frame fence. Keep one real completion marker
+	// for a batch, allowing ordinary rendering to continue while its notification is pending.
+	if (!submission_progress.pending && submitted_serial - completed_serial >= 8) {
+		WGPUQueueWorkDoneCallbackInfo callback = {};
+#ifdef __EMSCRIPTEN__
+		callback.mode = WGPUCallbackMode_AllowSpontaneous;
+#else
+		callback.mode = WGPUCallbackMode_AllowProcessEvents;
+#endif
+		callback.callback = _on_work_done;
+		callback.userdata1 = (void *)&submission_progress.done;
+		submission_progress.done = false;
+		submission_progress.pending = true;
+		progress_serial = submitted_serial;
+		submission_progress.future = wgpuQueueOnSubmittedWorkDone(queue, callback);
+	}
+	if (submitted_serial - completed_serial >= 32) {
+		_wait_for(submission_progress.future, submission_progress.done);
+		completed_serial = progress_serial;
+		submission_progress.pending = false;
+	}
 }
 
 void RenderingDeviceDriverWebGPU::command_queue_free(CommandQueueID p_cmd_queue) {
@@ -3124,6 +3222,9 @@ uint64_t RenderingDeviceDriverWebGPU::api_trait_get(ApiTrait p_trait) {
 			return 0; // WebGPU synchronizes resource usage itself.
 		case API_TRAIT_BUFFER_READBACK_WITHOUT_FRAME_STALL:
 			return 1; // mapAsync waits for the staging copy; queue writes and submissions are ordered.
+		case API_TRAIT_INDEPENDENT_BUFFER_READBACK:
+		case API_TRAIT_FRAME_RESOURCES_RELEASE_ON_SUBMIT:
+			return 1;
 		case API_TRAIT_TEXTURE_TRANSFER_ALIGNMENT:
 			return 4;
 		case API_TRAIT_TEXTURE_DATA_ROW_PITCH_STEP:

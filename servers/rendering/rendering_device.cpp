@@ -1364,6 +1364,30 @@ Error RenderingDevice::buffer_get_data_async(RID p_buffer, const Callable &p_cal
 	ERR_FAIL_COND_V_MSG(!p_callback.is_valid(), ERR_INVALID_PARAMETER, "Callback must be valid.");
 
 	_check_transfer_worker_buffer(buffer);
+	if (driver->api_trait_get(RDD::API_TRAIT_INDEPENDENT_BUFFER_READBACK)) {
+		// Own each staging allocation until its mapping finishes, independently of frame reuse.
+		// Backpressure bounds host/GPU memory when callers enqueue faster than callbacks arrive.
+		ERR_FAIL_COND_V_MSG(independent_buffer_readbacks.size() >= 256 ||
+						independent_buffer_readback_bytes + p_size > 64 * 1024 * 1024,
+				ERR_BUSY, "Too many asynchronous buffer readbacks are pending.");
+		RDD::BufferID staging = driver->buffer_create(p_size, RDD::BUFFER_USAGE_TRANSFER_TO_BIT, RDD::MEMORY_ALLOCATION_TYPE_CPU, frames_drawn);
+		ERR_FAIL_COND_V(!staging, ERR_OUT_OF_MEMORY);
+		if (_buffer_make_mutable(buffer, p_buffer)) {
+			draw_graph.add_synchronization();
+		}
+		RDD::BufferCopyRegion region;
+		region.src_offset = p_offset;
+		region.dst_offset = 0;
+		region.size = p_size;
+		draw_graph.add_buffer_get_data(buffer->driver_id, buffer->draw_tracker, staging, region);
+		IndependentBufferReadback request;
+		request.staging_buffer = staging;
+		request.callback = p_callback;
+		request.size = p_size;
+		independent_buffer_readbacks.push_back(request);
+		independent_buffer_readback_bytes += p_size;
+		return OK;
+	}
 
 	BufferGetDataRequest get_data_request;
 	get_data_request.callback = p_callback;
@@ -1432,6 +1456,46 @@ Error RenderingDevice::buffer_get_data_async(RID p_buffer, const Callable &p_cal
 	}
 
 	return OK;
+}
+
+void RenderingDevice::_start_independent_buffer_readbacks() {
+	for (IndependentBufferReadback &request : independent_buffer_readbacks) {
+		if (!request.submitted) {
+			// execute_chained_cmds has submitted the graph copy before mapAsync is registered.
+			request.submitted = true;
+			driver->buffer_map_async(request.staging_buffer);
+		}
+	}
+}
+
+void RenderingDevice::_process_independent_buffer_readbacks(bool p_wait) {
+	for (uint32_t i = 0; i < independent_buffer_readbacks.size();) {
+		const IndependentBufferReadback &request = independent_buffer_readbacks[i];
+		if (!request.submitted) {
+			i++;
+			continue;
+		}
+		Error result = driver->buffer_map_async_poll(request.staging_buffer, p_wait);
+		if (result == ERR_BUSY) {
+			i++;
+			continue;
+		}
+		PackedByteArray data;
+		if (result == OK) {
+			const uint8_t *mapped = driver->buffer_map(request.staging_buffer);
+			if (mapped) {
+				data.resize(request.size);
+				memcpy(data.ptrw(), mapped, request.size);
+				driver->buffer_unmap(request.staging_buffer);
+			}
+		}
+		Callable callback = request.callback;
+		independent_buffer_readback_bytes -= request.size;
+		driver->buffer_free(request.staging_buffer);
+		// Remove before delivery: a callback can enqueue another readback and reallocate this list.
+		independent_buffer_readbacks.remove_at(i);
+		callback.call(data);
+	}
 }
 
 uint64_t RenderingDevice::buffer_get_device_address(RID p_buffer) {
@@ -7980,7 +8044,7 @@ void RenderingDevice::submit() {
 	ERR_FAIL_COND_MSG(local_device_processing, "device already submitted, call sync to wait until done.");
 
 	_end_frame();
-	_execute_frame(false);
+	_execute_frame(false, true);
 	local_device_processing = true;
 }
 
@@ -7990,6 +8054,7 @@ void RenderingDevice::sync() {
 	ERR_FAIL_COND_MSG(!local_device_processing, "sync can only be called after a submit");
 
 	_begin_frame(true);
+	_process_independent_buffer_readbacks(true);
 	local_device_processing = false;
 }
 
@@ -8166,6 +8231,7 @@ void RenderingDevice::_begin_frame(bool p_presented) {
 	draw_graph.begin();
 
 	// Erase pending resources.
+	_process_independent_buffer_readbacks();
 	GodotProfileZoneGrouped(_profile_zone, "_free_pending_resources");
 	_free_pending_resources(frame);
 
@@ -8275,9 +8341,10 @@ void RenderingDevice::execute_chained_cmds(bool p_present_swap_chain, RenderingD
 	}
 
 	frames[frame].semaphores_to_wait_on.clear();
+	_start_independent_buffer_readbacks();
 }
 
-void RenderingDevice::_execute_frame(bool p_present) {
+void RenderingDevice::_execute_frame(bool p_present, bool p_require_fence) {
 	// Check whether this frame should present the swap chains and in which queue.
 	const bool frame_can_present = p_present && !frames[frame].swap_chains_to_present.is_empty();
 	const bool separate_present_queue = main_queue != present_queue;
@@ -8289,10 +8356,15 @@ void RenderingDevice::_execute_frame(bool p_present) {
 			: RDD::SemaphoreID(nullptr);
 	const bool present_swap_chain = frame_can_present && !separate_present_queue;
 
-	execute_chained_cmds(present_swap_chain, frames[frame].fence, semaphore);
+	// WebGPU owns submitted objects and queues host uploads in submission order. Its CPU
+	// command/frame bookkeeping can be reused without turning each frame into a GPU round trip.
+	// Explicit sync and the legacy texture-download path still use a real completion fence.
+	const bool require_fence = p_require_fence || !driver->api_trait_get(RDD::API_TRAIT_FRAME_RESOURCES_RELEASE_ON_SUBMIT) ||
+			!frames[frame].download_buffer_get_data_requests.is_empty() || !frames[frame].download_texture_get_data_requests.is_empty();
+	execute_chained_cmds(present_swap_chain, require_fence ? frames[frame].fence : RDD::FenceID(), semaphore);
 	// Indicate the fence has been signaled so the next time the frame's contents need to be
 	// used, the CPU needs to wait on the work to be completed.
-	frames[frame].fence_signaled = true;
+	frames[frame].fence_signaled = require_fence;
 
 	if (frame_can_present) {
 		if (separate_present_queue) {
@@ -8401,13 +8473,14 @@ void RenderingDevice::_stall_for_previous_frames() {
 void RenderingDevice::_flush_and_stall_for_all_frames(bool p_begin_frame) {
 	_stall_for_previous_frames();
 	_end_frame();
-	_execute_frame(false);
+	_execute_frame(false, true);
 
 	if (p_begin_frame) {
 		_begin_frame();
 	} else {
 		_stall_for_frame(frame);
 	}
+	_process_independent_buffer_readbacks(true);
 }
 
 Error RenderingDevice::initialize(RenderingContextDriver *p_context, DisplayServerEnums::WindowID p_main_window) {

@@ -33,11 +33,11 @@
 #ifdef WEBGPU_ENABLED
 
 #include "core/templates/local_vector.h"
+#include "core/templates/safe_refcount.h"
 #include "drivers/webgpu/rendering_context_driver_webgpu.h"
 #include "drivers/webgpu/rendering_shader_container_webgpu.h"
-#include "servers/rendering/rendering_device_driver.h"
-
 #include "drivers/webgpu/webgpu_wait.h"
+#include "servers/rendering/rendering_device_driver.h"
 
 class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 	GDSOFTCLASS(RenderingDeviceDriverWebGPU, RenderingDeviceDriver);
@@ -53,6 +53,10 @@ public:
 		bool cpu = false;
 		bool download = false;
 		bool gpu_written = false;
+		WGPUFuture map_future = {};
+		WGPUMapAsyncStatus map_status = WGPUMapAsyncStatus_Error;
+		SafeFlag map_done;
+		bool map_pending = false;
 		Vector<uint8_t> shadow;
 		// BUFFER_USAGE_DYNAMIC_PERSISTENT_BIT: `frame_count` regions of `size` bytes each, one per frame in flight. The
 		// shadow holds all regions; buffer_flush() uploads the current one.
@@ -190,6 +194,11 @@ private:
 	uint32_t push_constant_next_slot = 0;
 	static constexpr uint32_t PUSH_CONSTANT_SLOTS = 16384;
 	uint64_t total_memory_used = 0;
+	FenceInfo submission_progress;
+	uint64_t submitted_serial = 0;
+	uint64_t completed_serial = 0;
+	uint64_t progress_serial = 0;
+	void _track_submission_progress();
 
 	RenderingShaderContainerFormatWebGPU shader_container_format;
 	Capabilities capabilities;
@@ -226,6 +235,8 @@ public:
 	virtual void buffer_free(BufferID p_buffer) override;
 	virtual uint64_t buffer_get_allocation_size(BufferID p_buffer) override;
 	virtual uint8_t *buffer_map(BufferID p_buffer) override;
+	virtual Error buffer_map_async(BufferID p_buffer) override;
+	virtual Error buffer_map_async_poll(BufferID p_buffer, bool p_wait = false) override;
 	virtual void buffer_unmap(BufferID p_buffer) override;
 	virtual uint8_t *buffer_persistent_map_advance(BufferID p_buffer, uint64_t p_frames_drawn) override;
 	virtual uint64_t buffer_get_dynamic_offsets(Span<BufferID> p_buffers) override;

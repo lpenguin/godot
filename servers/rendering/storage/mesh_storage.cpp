@@ -32,6 +32,12 @@
 
 #include "core/config/engine.h"
 #include "core/math/transform_interpolator.h"
+#include "servers/rendering/rendering_server.h"
+
+void RendererMeshStorage::mesh_surface_get_arrays_async(RID p_mesh, int p_surface, const Callable &p_callback) {
+	ERR_FAIL_COND(!p_callback.is_valid());
+	p_callback.call_deferred(RenderingServer::get_singleton()->mesh_create_arrays_from_surface_data(mesh_get_surface(p_mesh, p_surface)));
+}
 
 RID RendererMeshStorage::multimesh_allocate() {
 	return _multimesh_allocate();

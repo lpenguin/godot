@@ -216,6 +216,16 @@ private:
 		Callable callback;
 		uint32_t size = 0;
 	};
+	struct IndependentBufferReadback {
+		RDD::BufferID staging_buffer;
+		Callable callback;
+		uint32_t size = 0;
+		bool submitted = false;
+	};
+	LocalVector<IndependentBufferReadback> independent_buffer_readbacks;
+	uint64_t independent_buffer_readback_bytes = 0;
+	void _start_independent_buffer_readbacks();
+	void _process_independent_buffer_readbacks(bool p_wait = false);
 
 	Error _buffer_update(Buffer *p_buffer, RID p_buffer_id, uint32_t p_offset, uint32_t p_size, const void *p_data);
 
@@ -1876,7 +1886,7 @@ public:
 	void _free_internal(RID p_id);
 	void _begin_frame(bool p_presented = false);
 	void _end_frame();
-	void _execute_frame(bool p_present);
+	void _execute_frame(bool p_present, bool p_require_fence = false);
 	void _stall_for_frame(uint32_t p_frame);
 	void _stall_for_previous_frames();
 	void _flush_and_stall_for_all_frames(bool p_begin_frame = true);

@@ -391,6 +391,7 @@ public:
 	virtual RID mesh_surface_get_material(RID p_mesh, int p_surface) const override;
 
 	virtual RenderingServerTypes::SurfaceData mesh_get_surface(RID p_mesh, int p_surface) const override;
+	virtual void mesh_surface_get_arrays_async(RID p_mesh, int p_surface, const Callable &p_callback) override;
 
 	virtual int mesh_get_surface_count(RID p_mesh) const override;
 

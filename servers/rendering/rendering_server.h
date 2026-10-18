@@ -227,6 +227,7 @@ public:
 	virtual RID mesh_surface_get_material(RID p_mesh, int p_surface) const = 0;
 
 	virtual RenderingServerTypes::SurfaceData mesh_get_surface(RID p_mesh, int p_surface) const = 0;
+	virtual void mesh_surface_get_arrays_async(RID p_mesh, int p_surface, const Callable &p_callback) = 0;
 
 	virtual int mesh_get_surface_count(RID p_mesh) const = 0;
 

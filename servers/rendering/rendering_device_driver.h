@@ -197,6 +197,9 @@ public:
 	virtual void buffer_free(BufferID p_buffer) = 0;
 	virtual uint64_t buffer_get_allocation_size(BufferID p_buffer) = 0;
 	virtual uint8_t *buffer_map(BufferID p_buffer) = 0;
+	// Independent readbacks. Polling must not wait unless explicitly requested (sync/finalize).
+	virtual Error buffer_map_async(BufferID p_buffer) { return ERR_UNAVAILABLE; }
+	virtual Error buffer_map_async_poll(BufferID p_buffer, bool p_wait = false) { return ERR_UNAVAILABLE; }
 	virtual void buffer_unmap(BufferID p_buffer) = 0;
 	virtual uint8_t *buffer_persistent_map_advance(BufferID p_buffer, uint64_t p_frames_drawn) = 0;
 	virtual uint64_t buffer_get_dynamic_offsets(Span<BufferID> p_buffers) = 0;
@@ -910,6 +913,10 @@ public:
 		// buffer_map() waits for the submitted copy itself. Mid-frame command buffers can be
 		// submitted and recording restarted without resetting/recycling any per-frame resources.
 		API_TRAIT_BUFFER_READBACK_WITHOUT_FRAME_STALL,
+		API_TRAIT_INDEPENDENT_BUFFER_READBACK,
+		// Queue writes copy host data and are ordered with submissions. Submitted commands retain
+		// GPU objects, so recycling CPU frame bookkeeping does not require a GPU completion fence.
+		API_TRAIT_FRAME_RESOURCES_RELEASE_ON_SUBMIT,
 		API_TRAIT_ACCELERATION_STRUCTURE_INSTANCE_SIZE,
 		API_TRAIT_SHADER_GROUP_HANDLE_SIZE,
 		API_TRAIT_SHADER_GROUP_BASE_ALIGNMENT,

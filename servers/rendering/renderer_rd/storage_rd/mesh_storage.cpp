@@ -30,6 +30,8 @@
 
 #include "mesh_storage.h"
 
+#include "core/object/callable_mp.h"
+#include "core/object/ref_counted.h"
 #include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_types.h"
@@ -684,6 +686,86 @@ RenderingServerTypes::SurfaceData MeshStorage::mesh_get_surface(RID p_mesh, int 
 	}
 
 	return sd;
+}
+
+namespace {
+class SurfaceArraysReadback : public RefCounted {
+	GDSOFTCLASS(SurfaceArraysReadback, RefCounted);
+
+public:
+	RenderingServerTypes::SurfaceData data;
+	Callable callback;
+	int pending = 0;
+	bool failed = false;
+};
+
+void finish_surface_arrays_readback(const PackedByteArray &p_data, Ref<SurfaceArraysReadback> p_request, int p_component) {
+	if (p_data.is_empty()) {
+		p_request->failed = true;
+	}
+	switch (p_component) {
+		case 0:
+			p_request->data.vertex_data = p_data;
+			break;
+		case 1:
+			p_request->data.attribute_data = p_data;
+			break;
+		case 2:
+			p_request->data.skin_data = p_data;
+			break;
+		case 3:
+			p_request->data.index_data = p_data;
+			break;
+	}
+	if (--p_request->pending != 0) {
+		return;
+	}
+	Array arrays;
+	if (!p_request->failed) {
+		RenderingServerTypes::SurfaceData &data = p_request->data;
+		if (!(data.format & RSE::ARRAY_FLAG_COMPRESS_ATTRIBUTES) && (data.format & RSE::ARRAY_FORMAT_NORMAL) && !(data.format & RSE::ARRAY_FORMAT_TANGENT)) {
+			data.vertex_data.resize(data.vertex_data.size() - sizeof(uint16_t) * 2);
+		}
+		arrays = RenderingServer::get_singleton()->mesh_create_arrays_from_surface_data(data);
+	}
+	// RenderingDevice callbacks execute on the render thread; expose a main-thread completion.
+	p_request->callback.call_deferred(arrays);
+}
+} // namespace
+
+void MeshStorage::mesh_surface_get_arrays_async(RID p_mesh, int p_surface, const Callable &p_callback) {
+	ERR_FAIL_COND(!p_callback.is_valid());
+	Mesh *mesh = mesh_owner.get_or_null(p_mesh);
+	if (!mesh || p_surface < 0 || uint32_t(p_surface) >= mesh->surface_count) {
+		p_callback.call_deferred(Array());
+		return;
+	}
+	const Mesh::Surface &surface = *mesh->surfaces[p_surface];
+	Ref<SurfaceArraysReadback> request;
+	request.instantiate();
+	request->callback = p_callback;
+	request->data.format = surface.format;
+	request->data.vertex_count = surface.vertex_count;
+	request->data.index_count = surface.index_count;
+	request->data.aabb = surface.aabb;
+	request->data.uv_scale = surface.uv_scale;
+	RID buffers[] = { surface.vertex_buffer, surface.attribute_buffer, surface.skin_buffer, surface.index_buffer };
+	for (RID buffer : buffers) {
+		request->pending += buffer.is_valid() ? 1 : 0;
+	}
+	if (request->pending == 0) {
+		p_callback.call_deferred(Array());
+		return;
+	}
+	for (int i = 0; i < 4; i++) {
+		if (!buffers[i].is_valid()) {
+			continue;
+		}
+		Callable callback = callable_mp_static(&finish_surface_arrays_readback).bind(request, i);
+		if (RD::get_singleton()->buffer_get_data_async(buffers[i], callback) != OK) {
+			finish_surface_arrays_readback(PackedByteArray(), request, i);
+		}
+	}
 }
 
 int MeshStorage::mesh_get_surface_count(RID p_mesh) const {
