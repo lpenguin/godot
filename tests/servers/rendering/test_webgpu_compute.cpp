@@ -284,6 +284,113 @@ TEST_CASE("[WebGPU][Compute] Independent readbacks survive frame reuse and sourc
 	}
 }
 
+struct UploadCountingDriver : RenderingDeviceDriverWebGPU {
+	int fence_wait_calls = 0;
+
+	UploadCountingDriver(RenderingContextDriverWebGPU *p_context) :
+			RenderingDeviceDriverWebGPU(p_context) {}
+
+	Error fence_wait(FenceID p_fence) override {
+		fence_wait_calls++;
+		return RenderingDeviceDriverWebGPU::fence_wait(p_fence);
+	}
+};
+
+struct UploadCountingContext : RenderingContextDriverWebGPU {
+	UploadCountingDriver *driver = nullptr;
+
+	RenderingDeviceDriver *driver_create() override {
+		driver = memnew(UploadCountingDriver(this));
+		return driver;
+	}
+};
+
+TEST_CASE("[WebGPU][Compute] Upload worker reuse preserves queued snapshots without fence waits") {
+	UploadCountingContext context;
+	REQUIRE(context.initialize() == OK);
+	RenderingDevice rd;
+	REQUIRE(rd.initialize(&context) == OK);
+	const int initial_waits = context.driver->fence_wait_calls;
+	const int iterations = 48;
+	Array results;
+	results.resize(iterations * 3);
+	Dictionary state;
+	state["results"] = results;
+	state["count"] = 0;
+	Vector<PackedByteArray> expected;
+	for (int iteration = 0; iteration < iterations; iteration++) {
+		for (int batch = 0; batch < 3; batch++) {
+			// A and B share unsubmitted staging storage. C forces submission and
+			// growth of the initial 16 KiB staging buffer, then later frames reuse it.
+			const int bytes = batch < 2 ? 64 + batch * 32 : 32768 + (iteration % 3) * 4096;
+			PackedByteArray input;
+			input.resize(bytes);
+			uint32_t *words = (uint32_t *)input.ptrw();
+			for (int i = 0; i < bytes / 4; i++) {
+				words[i] = iteration * 100000 + batch * 10000 + i;
+			}
+			expected.push_back(input);
+			RID buffer = rd.vertex_buffer_create(bytes, input);
+			REQUIRE(buffer.is_valid());
+			const int index = iteration * 3 + batch;
+			REQUIRE(rd.buffer_get_data_async(buffer, callable_mp_static(&collect_independent_readback).bind(state, index)) == OK);
+			input.fill(0); // The original caller's data must already have been captured.
+			rd.free_rid(buffer);
+		}
+		rd.swap_buffers(false);
+	}
+	for (int i = 0; i < 1000 && int(state["count"]) != iterations * 3; i++) {
+		rd.swap_buffers(false);
+		OS::get_singleton()->delay_usec(1000);
+	}
+	REQUIRE(int(state["count"]) == iterations * 3);
+	CHECK(context.driver->fence_wait_calls == initial_waits);
+	for (int i = 0; i < expected.size(); i++) {
+		PackedByteArray data = results[i];
+		CHECK(data == expected[i]);
+	}
+	// A real explicit completion still exists independently of upload recycling.
+	rd.submit();
+	rd.sync();
+	CHECK(context.driver->fence_wait_calls > initial_waits);
+}
+
+TEST_CASE("[WebGPU][Compute] Initial texture uploads reuse staging without waiting") {
+	UploadCountingContext context;
+	REQUIRE(context.initialize() == OK);
+	RenderingDevice rd;
+	REQUIRE(rd.initialize(&context) == OK);
+	const int initial_waits = context.driver->fence_wait_calls;
+	Vector<RID> textures;
+	Vector<Vector<uint8_t>> expected;
+	for (int iteration = 0; iteration < 24; iteration++) {
+		RDC::TextureFormat format;
+		format.format = RDC::DATA_FORMAT_R8G8B8A8_UNORM;
+		format.texture_type = RDC::TEXTURE_TYPE_3D;
+		format.width = 13 + (iteration % 3) * 17;
+		format.height = 7 + (iteration % 4) * 5;
+		format.depth = 3;
+		format.usage_bits = RDC::TEXTURE_USAGE_SAMPLING_BIT | RDC::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+		Vector<uint8_t> data;
+		data.resize(format.width * format.height * format.depth * 4);
+		for (int i = 0; i < data.size(); i++) {
+			data.write[i] = uint8_t(iteration * 37 + i * 13);
+		}
+		expected.push_back(data);
+		Vector<Vector<uint8_t>> layers;
+		layers.push_back(data);
+		RID texture = rd.texture_create(format, RenderingDevice::TextureView(), layers);
+		REQUIRE(texture.is_valid());
+		textures.push_back(texture);
+	}
+	CHECK(context.driver->fence_wait_calls == initial_waits);
+	for (int i = 0; i < textures.size(); i++) {
+		CHECK(rd.texture_get_data(textures[i], 0) == expected[i]);
+		rd.free_rid(textures[i]);
+	}
+	CHECK(context.driver->fence_wait_calls > initial_waits);
+}
+
 #ifdef THREADS_ENABLED
 struct ConcurrentSubmission {
 	RenderingDeviceDriverWebGPU *driver = nullptr;

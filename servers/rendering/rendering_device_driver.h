@@ -917,6 +917,9 @@ public:
 		// Queue writes copy host data and are ordered with submissions. Submitted commands retain
 		// GPU objects, so recycling CPU frame bookkeeping does not require a GPU completion fence.
 		API_TRAIT_FRAME_RESOURCES_RELEASE_ON_SUBMIT,
+		// Uploads share the draw queue, queue writes snapshot CPU data, and submitted commands
+		// retain their resources. Transfer worker recording/staging can restart after submission.
+		API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT,
 		API_TRAIT_ACCELERATION_STRUCTURE_INSTANCE_SIZE,
 		API_TRAIT_SHADER_GROUP_HANDLE_SIZE,
 		API_TRAIT_SHADER_GROUP_BASE_ALIGNMENT,

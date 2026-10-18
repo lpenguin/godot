@@ -2332,7 +2332,9 @@ Error RenderingDevice::_texture_initialize(RID p_texture, uint32_t p_layer, cons
 			if (p_immediate_flush) {
 				_end_transfer_worker(transfer_worker);
 				_submit_transfer_worker(transfer_worker);
-				_wait_for_transfer_worker(transfer_worker);
+				if (transfer_worker->submitted) {
+					_wait_for_transfer_worker(transfer_worker);
+				}
 			}
 
 			_release_transfer_worker(transfer_worker);
@@ -7433,18 +7435,29 @@ void RenderingDevice::_end_transfer_worker(TransferWorker *p_transfer_worker) {
 }
 
 void RenderingDevice::_submit_transfer_worker(TransferWorker *p_transfer_worker, VectorView<RDD::SemaphoreID> p_signal_semaphores) {
-	driver->command_queue_execute_and_present(transfer_queue, {}, p_transfer_worker->command_buffer, p_signal_semaphores, p_transfer_worker->command_fence, {});
+	const bool release_on_submit = driver->api_trait_get(RDD::API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT);
+	driver->command_queue_execute_and_present(transfer_queue, {}, p_transfer_worker->command_buffer, p_signal_semaphores,
+			release_on_submit ? RDD::FenceID() : p_transfer_worker->command_fence, {});
 
 	for (uint32_t i = 0; i < p_signal_semaphores.size(); i++) {
 		// Indicate the frame should wait on these semaphores before executing the main command buffer.
 		frames[frame].semaphores_to_wait_on.push_back(p_signal_semaphores[i]);
 	}
 
-	p_transfer_worker->submitted = true;
+	p_transfer_worker->submitted = !release_on_submit;
 
 	{
 		MutexLock lock(p_transfer_worker->operations_mutex);
 		p_transfer_worker->operations_submitted = p_transfer_worker->operations_counter;
+	}
+
+	if (release_on_submit) {
+		// The previous copy is already on the same queue as all later writes and draws.
+		// This releases CPU recording/staging space, not a GPU completion fence. Never
+		// reuse its offsets before submission, or later writes could replace queued data.
+		driver->command_pool_reset(p_transfer_worker->command_pool);
+		p_transfer_worker->staging_buffer_size_in_use = 0;
+		_flush_barriers_for_transfer_worker(p_transfer_worker);
 	}
 }
 
@@ -7515,12 +7528,15 @@ void RenderingDevice::_check_transfer_worker_index_array(IndexArray *p_index_arr
 
 void RenderingDevice::_submit_transfer_workers(RDD::CommandBufferID p_draw_command_buffer) {
 	MutexLock transfer_worker_lock(transfer_worker_pool_mutex);
+	const bool release_on_submit = driver->api_trait_get(RDD::API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT);
 	for (uint32_t i = 0; i < transfer_worker_pool_size; i++) {
 		TransferWorker *worker = transfer_worker_pool[i];
 		if (p_draw_command_buffer) {
 			MutexLock lock(worker->operations_mutex);
-			if (worker->operations_processed >= transfer_worker_operation_used_by_draw[worker->index]) {
-				// The operation used by the draw has already been processed, we don't need to wait on the worker.
+			const uint64_t ready_operation = release_on_submit ? worker->operations_submitted : worker->operations_processed;
+			if (ready_operation >= transfer_worker_operation_used_by_draw[worker->index]) {
+				// Queue-ordered uploads only need to be submitted before their draw; other APIs
+				// retain the original completed-operation/barrier path.
 				continue;
 			}
 		}
@@ -7550,6 +7566,15 @@ void RenderingDevice::_submit_transfer_barriers(RDD::CommandBufferID p_draw_comm
 
 void RenderingDevice::_wait_for_transfer_workers() {
 	MutexLock transfer_worker_lock(transfer_worker_pool_mutex);
+	if (driver->api_trait_get(RDD::API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT)) {
+		// Explicit draining (not ordinary reuse) must still wait for real completion,
+		// including uploads submitted after the last draw fence during finalization.
+		RDD::FenceID fence = driver->fence_create();
+		driver->command_queue_execute_and_present(transfer_queue, {}, {}, {}, fence, {});
+		driver->fence_wait(fence);
+		driver->fence_free(fence);
+		return;
+	}
 	for (uint32_t i = 0; i < transfer_worker_pool_size; i++) {
 		TransferWorker *worker = transfer_worker_pool[i];
 		MutexLock lock(worker->thread_mutex);

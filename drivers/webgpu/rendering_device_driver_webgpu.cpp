@@ -3241,6 +3241,7 @@ uint64_t RenderingDeviceDriverWebGPU::api_trait_get(ApiTrait p_trait) {
 			return 1; // mapAsync waits for the staging copy; queue writes and submissions are ordered.
 		case API_TRAIT_INDEPENDENT_BUFFER_READBACK:
 		case API_TRAIT_FRAME_RESOURCES_RELEASE_ON_SUBMIT:
+		case API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT:
 			return 1;
 		case API_TRAIT_TEXTURE_TRANSFER_ALIGNMENT:
 			return 4;

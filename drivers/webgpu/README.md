@@ -37,6 +37,24 @@ Debug aids added to the engine: `GODOT_WEBGPU_DUMP_SPIRV=<dir>` (driver: dump wh
 
 ## CPU uploads
 
+v17 adds `API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT`, enabled only by WebGPU. Its upload workers
+recycle CPU staging offsets and create fresh encoders after actual queue submission, without registering a
+per-upload completion fence. CPU shadows have already been copied by queue writes; later writes to reused GPU
+staging storage are ordered after the preceding copy submission on the same queue. Offsets remain distinct
+while a worker is still recording. Worker dependencies compare submitted operations for this trait, without
+reporting GPU completion early. Vulkan and other drivers retain the previous completion/barrier path.
+
+Initial texture uploads use the same rule, including immediate-flush loads. Explicit sync still waits on a
+real draw fence. Finalization drains a real queue-tail fence after submitting any remaining uploads, including
+uploads made after the last draw fence. No per-upload callback storage is recycled while callbacks are pending;
+the existing bounded submission-progress tracker remains responsible for queue backpressure.
+
+This addresses the 4K WoodWorks cutting stall from changing Line2D indicator polygons: the old upload-worker
+reuse path synchronously waited on queue notifications. Local GPU regressions check 144 immutable buffer
+snapshots across 48 frame cycles, staging growth/reuse/source disposal, 24 initial 3D texture uploads, absence
+of upload fence waits and preservation of explicit synchronization. Native selected WebGPU tests pass 2913
+assertions in 12 cases. Firefox validation is a separate local step; CI continues building artifacts only.
+
 ### Browser readback and shader startup
 
 The v15 path makes `RenderingDevice::buffer_get_data_async` independent of frame fences. Each request owns a
