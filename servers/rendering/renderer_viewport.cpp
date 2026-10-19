@@ -997,6 +997,15 @@ void RendererViewport::viewport_initialize(RID p_rid) {
 	viewport->viewport_render_direct_to_screen = false;
 
 	viewport->fsr_enabled = !RSG::rasterizer->is_low_end() && !viewport->disable_3d;
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	RenderingDevice *device = RenderingDevice::get_singleton();
+	if (device && device->get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU &&
+			ProjectSettings::get_singleton()->has_setting("rendering/driver/webgpu/precompile_scene_pipelines") &&
+			bool(GLOBAL_GET("rendering/driver/webgpu/precompile_scene_pipelines"))) {
+		viewport->stable_motion_vectors = true;
+		num_viewports_with_motion_vectors++;
+	}
+#endif
 }
 
 #ifndef XR_DISABLED
@@ -1119,7 +1128,7 @@ void RendererViewport::_viewport_set_size(Viewport *p_viewport, int p_width, int
 }
 
 bool RendererViewport::_viewport_requires_motion_vectors(Viewport *p_viewport) {
-	return p_viewport->use_taa ||
+	return p_viewport->stable_motion_vectors || p_viewport->use_taa ||
 			RSE::scaling_3d_mode_type(p_viewport->scaling_3d_mode) == RSE::VIEWPORT_SCALING_3D_TYPE_TEMPORAL ||
 			p_viewport->debug_draw == RSE::VIEWPORT_DEBUG_DRAW_MOTION_VECTORS || p_viewport->force_motion_vectors;
 }

@@ -3393,6 +3393,13 @@
 				Sets the filter quality for omni and spot light shadows in 3D. See also [member ProjectSettings.rendering/lights_and_shadows/positional_shadow/soft_shadow_filter_quality]. This parameter is global and cannot be set on a per-viewport basis.
 			</description>
 		</method>
+		<method name="prepare_scene_pipelines">
+			<return type="void" />
+			<description>
+				Requests preparation of instantiated scene material pipelines in the next rendered 3D frame. In this fork's single-threaded WebGPU scene-preparation mode, call this after adding and configuring the scene's meshes, material overrides, lighting and hidden effects. Until the first request, this opt-in mode updates the scene but defers 3D surface drawing and pipeline creation, allowing the loading UI to remain visible while instance/lightmap pairing settles.
+				This request is idempotent. Subsequent dirty instances are prepared automatically in the active viewport's render context. Await [signal frame_post_draw] after the request before enabling gameplay. WebGPU pipeline creation in this mode waits for actual asynchronous compiler readiness; the request itself is not a GPU-completion notification. Other renderers retain their normal automatic preparation.
+			</description>
+		</method>
 		<method name="reflection_probe_create">
 			<return type="RID" />
 			<description>

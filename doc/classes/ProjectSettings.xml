@@ -2916,6 +2916,10 @@
 		<member name="rendering/driver/threads/thread_model" type="int" setter="" getter="" default="1" experimental="This setting has several known bugs which can lead to crashing, especially when using particles or resizing the window. Not recommended for use in production at this stage.">
 			The thread model to use for rendering. Rendering on a thread may improve performance, but synchronizing to the main thread can cause a bit more jitter.
 		</member>
+		<member name="rendering/driver/webgpu/precompile_scene_pipelines" type="bool" setter="" getter="" default="false">
+			Enables explicit scene pipeline preparation for this fork's single-threaded WebGPU Forward+ renderer. The client configures its scene and hidden future effects, lets instance/lightmap pairing update, then calls [method RenderingServer.prepare_scene_pipelines] under a loading overlay. Before the first request, 3D surface drawing and pipeline preparation are deferred; 2D loading UI and scene updates continue. Other drivers keep their normal preparation path.
+			Prepared universal pipelines are retained and used during gameplay to avoid browser compiler stalls from new specializations. The renderer maintains a velocity attachment even when TAA is disabled so both TAA states share the same opaque pipeline family. Transparent passes still omit velocity writes. This can increase render-target memory and bandwidth; validate on the target browser/device. This setting requires restarting the project.
+		</member>
 		<member name="rendering/environment/defaults/default_clear_color" type="Color" setter="" getter="" default="Color(0.3, 0.3, 0.3, 1)">
 			Default background clear color. Overridable per [Viewport] using its [Environment]. See [member Environment.background_mode] and [member Environment.background_color] in particular. To change this default color programmatically, use [method RenderingServer.set_default_clear_color].
 		</member>

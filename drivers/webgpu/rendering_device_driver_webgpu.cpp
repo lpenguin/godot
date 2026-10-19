@@ -32,12 +32,14 @@
 
 #include "rendering_device_driver_webgpu.h"
 
+#include "thirdparty/spirv-reflect/spirv_reflect.h"
+
 #include "core/config/engine.h"
+#include "core/config/project_settings.h"
 #include "core/io/file_access.h"
 #include "core/os/os.h"
 #include "core/string/print_string.h"
 #include "core/templates/pair.h"
-#include "thirdparty/spirv-reflect/spirv_reflect.h"
 
 namespace {
 
@@ -2927,7 +2929,38 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_c
 		desc.fragment = &fragment;
 	}
 
-	WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(device, &desc);
+	WGPURenderPipeline pipeline = nullptr;
+#ifdef __EMSCRIPTEN__
+	if (ProjectSettings::get_singleton()->has_setting("rendering/driver/webgpu/precompile_scene_pipelines") && bool(GLOBAL_GET("rendering/driver/webgpu/precompile_scene_pipelines"))) {
+		// A synchronous WebGPU handle need not have finished driver compilation.
+		// JSPI suspends this stack until the actual asynchronous pipeline is ready;
+		// no duplicate pipeline or dummy draw is needed to acknowledge readiness.
+		struct PipelineRequest {
+			WGPURenderPipeline pipeline = nullptr;
+			String message;
+			bool done = false;
+		} request;
+		WGPUCreateRenderPipelineAsyncCallbackInfo callback = {};
+		callback.mode = WEBGPU_CALLBACK_MODE;
+		callback.userdata1 = &request;
+		callback.callback = [](WGPUCreatePipelineAsyncStatus p_status, WGPURenderPipeline p_pipeline, WGPUStringView p_message, void *p_userdata1, void *p_userdata2) {
+			PipelineRequest *result = (PipelineRequest *)p_userdata1;
+			if (p_status == WGPUCreatePipelineAsyncStatus_Success) {
+				result->pipeline = p_pipeline;
+			} else {
+				result->message = _sv_to_string(p_message);
+			}
+			result->done = true;
+		};
+		WGPUFuture future = wgpuDeviceCreateRenderPipelineAsync(device, &desc, callback);
+		_wait_for(future, request.done);
+		ERR_FAIL_NULL_V_MSG(request.pipeline, PipelineID(), "WebGPU render pipeline preparation failed: " + request.message);
+		pipeline = request.pipeline;
+	} else
+#endif
+	{
+		pipeline = wgpuDeviceCreateRenderPipeline(device, &desc);
+	}
 	ERR_FAIL_NULL_V(pipeline, PipelineID());
 
 	PipelineInfo *info = memnew(PipelineInfo);

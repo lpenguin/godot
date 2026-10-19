@@ -172,6 +172,56 @@ not been captured; the CPU sample contained valid tangents. See WoodWorks `docs/
 
 Releases of the browser build are tagged `godot-4.7.2-webgpu-vN`; see `.github/workflows/webgpu_release.yml`.
 
+## Explicit scene preparation (v18)
+
+Single-threaded browser Forward+ can opt into
+`rendering/driver/webgpu/precompile_scene_pipelines.web=true`. Until the first
+`RenderingServer.prepare_scene_pipelines()` request, scene updates and 2D loading UI continue,
+but 3D surface draws and surface pipeline preparation are deferred. Add/configure the scene's
+instances, material overrides, lighting and hidden future tools, allow instance/lightmap pairing
+to settle, then request preparation under the loading overlay and await `frame_post_draw`.
+The request is idempotent; later dirty instances prepare automatically in a rendered viewport's
+context. It is not an enumeration of resources in a folder or a general asynchronous scene loader.
+
+Preparation uses instantiated surfaces rather than speculative resource-only mesh combinations.
+It retains the actual instance lightmap choice, while reflection/multiview contexts keep the
+conservative desktop combinations. Opaque surfaces keep a stable velocity attachment with TAA
+either enabled or disabled; transparent passes omit velocity writes. The viewport motion-vector
+count also stays enabled so previous-frame vertex/skin data remain valid. This increases potential
+render-target memory/bandwidth. Avoid enabling the option without a client preparation request.
+
+The browser driver creates the actual render pipeline with `wgpuDeviceCreateRenderPipelineAsync`.
+Its existing JSPI future wait suspends the loading stack until readiness, instead of treating an
+immediate synchronous handle or an unrelated queue acknowledgment as compiler completion.
+Gameplay continues using these universal pipelines, without requesting specialized pipelines on
+Firefox's shared canvas/compositor path. New materials, vertex layouts or render features can
+still need new pipelines; retain the prepared instances and validate the intended transitions.
+Native Vulkan/WebGPU and the default-disabled browser mode retain their existing behavior.
+
+Local Firefox 158 / RTX 4070 SUPER / Windows, controlled 1920x1080 canvas and diagnostic
+frame-rate override 160: preparation 39.337 s, 171 async plus six synchronous render pipelines,
+275 shader modules. Three 18-second camera orbits created no pipelines or modules, measuring
+77.66/77.75/87.48 FPS. All eight authored WoodWorks tools selected successfully; first half-round
+selection created six pipelines from already prepared shaders in about 11 ms total, with a
+34.24 ms maximum frame gap. This is narrower than the rejected 97.494 s / 264-pipeline broad
+preparation prototype, but slower than the previous 25.974 s / 96-pipeline camera-view warmup,
+which covered fewer tool states. It is not a startup improvement over that published build.
+The same 14 pre-existing unsupported/unused-feature startup errors remain; orbit/tool phases
+had no device loss or new validation errors. These scheduling measurements are not maximum
+foreground throughput. Full results and local reproductions live in WoodWorks `docs/web_webgpu.md`.
+
+The matching 3840x2160 run prepares in 39.288 s and measures 58.60/58.24/61.60 FPS during
+the same orbits, again without new pipelines/modules. All eight tool selections measure
+65.20–65.52 FPS over their five-second windows, with maximum gaps 31.34–39.10 ms. The first
+half-round tool creates six cached-shader pipelines in 11.30 ms total. The lathe-to-chisel
+station transition creates no pipelines but still has a 175.48 ms frame gap; this is a remaining
+non-compilation hitch, not evidence that every interaction is free of stalls.
+
+The optimized Windows editor build, native hidden-instance/material-override fixture and
+official Godot 4.7.2 Vulkan reset/cut probe pass. Existing unused-feature diagnostics and fixture
+shader RID leak warnings remain. Release CI still only builds and publishes artifacts;
+shader baking belongs to the consuming project's build, and browser profiling stays local.
+
 ## Setting up a machine
 
 Everything goes under `thirdparty_local/` of the Godot checkout (git-ignored).

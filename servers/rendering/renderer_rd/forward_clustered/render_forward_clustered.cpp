@@ -303,6 +303,13 @@ void RenderForwardClustered::update() {
 
 template <RenderForwardClustered::PassMode p_pass_mode, uint32_t p_color_pass_flags>
 void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p_draw_list, RenderingDevice::FramebufferFormatID p_framebuffer_Format, RenderListParameters *p_params, uint32_t p_from_element, uint32_t p_to_element) {
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	if (webgpu_scene_precompile && !webgpu_precompile_requested) {
+		// Let scene pairing and viewport features settle under the loading overlay.
+		// The client requests preparation after configuring its instances/materials.
+		return;
+	}
+#endif
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 	RendererRD::ParticlesStorage *particles_storage = RendererRD::ParticlesStorage::get_singleton();
 	RD::DrawListID draw_list = p_draw_list;
@@ -486,6 +493,14 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 		pipeline_key.framebuffer_format_id = framebuffer_format;
 		pipeline_key.wireframe = p_params->force_wireframe;
 		pipeline_key.ubershader = 0;
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+		// A browser compilation can also stall its canvas/compositing thread. Keep
+		// using the prepared universal pipeline instead of requesting specializations
+		// during interaction when there is no independent compilation worker.
+		if (webgpu_scene_precompile) {
+			pipeline_key.ubershader = 1;
+		}
+#endif
 
 		bool emulate_point_size = shader->uses_point_size && scene_shader.emulate_point_size;
 
@@ -521,7 +536,7 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 			if (shader != prev_shader || pipeline_hash != prev_pipeline_hash) {
 				RSE::PipelineSource pipeline_source = pipeline_key.ubershader ? RSE::PIPELINE_SOURCE_DRAW : RSE::PIPELINE_SOURCE_SPECIALIZATION;
 				bool wait_for_pipeline = pipeline_key.ubershader;
-#if defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
 				// Without workers compilation has already finished when the task returns.
 				// Collect it now instead of also compiling the fallback ubershader.
 				wait_for_pipeline = wait_for_pipeline || webgpu;
@@ -1824,6 +1839,14 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 
 	//p_render_data->scene_data->subsurface_scatter_width = subsurface_scatter_size;
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	// Keep the scene color attachment layout stable when TAA/lathe blur toggles.
+	// Producing an unused velocity attachment does not enable temporal AA, and
+	// avoids compiling both complete color shader families for the same scene.
+	if (webgpu_scene_precompile && !is_reflection_probe) {
+		motion_vectors_required = true;
+	}
+#endif
 	p_render_data->scene_data->calculate_motion_vectors = motion_vectors_required;
 	p_render_data->scene_data->directional_light_count = 0;
 	p_render_data->scene_data->opaque_prepass_threshold = 0.99f;
@@ -2007,7 +2030,13 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	}
 
 	// Update the compiled pipelines if any of the requirements have changed.
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	webgpu_precompile_render_context = webgpu_scene_precompile;
+#endif
 	_update_dirty_geometry_pipelines();
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	webgpu_precompile_render_context = false;
+#endif
 
 	RID radiance_texture;
 	bool draw_sky = false;
@@ -4707,10 +4736,11 @@ void RenderForwardClustered::_mesh_compile_pipeline_for_surface(SceneShaderForwa
 }
 
 void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePipelineData &p_surface, const GlobalPipelineData &p_global, RSE::PipelineSource p_source, Vector<ShaderPipelinePair> *r_pipeline_pairs) {
-#if defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
-	if (webgpu) {
-		// Speculative ubershader compilation blocks the browser's only application thread.
-		// Compile the specialized pipelines needed by actual draws instead.
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	if (webgpu && (!webgpu_scene_precompile || !webgpu_precompile_render_context || p_source == RSE::PIPELINE_SOURCE_MESH)) {
+		// Prepare instantiated scene surfaces with their final material overrides and
+		// render features. Resource loading alone also includes unused meshes and
+		// guesses their lightmap state, creating redundant browser compilations.
 		return;
 	}
 #endif
@@ -4731,10 +4761,23 @@ void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePi
 	// Grab the shader and surface used for most passes.
 	const uint32_t multiview_iterations = multiview_enabled ? 2 : 1;
 	const uint32_t lightmap_iterations = p_global.use_lightmaps && p_surface.can_use_lightmap ? 2 : 1;
+	uint32_t lightmap_start = 0;
+	bool stable_motion = false;
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	if (webgpu_scene_precompile && !p_global.use_reflection_probes && !multiview_enabled) {
+		// Instance data gives the actual lightmap choice; resource-only preparation
+		// has to speculate. Reflection views can need the alternative, so retain
+		// the full desktop set when those are enabled.
+		lightmap_start = lightmap_iterations == 2 ? 1 : 0;
+		stable_motion = p_global.use_motion_vectors;
+	}
+#endif
 	const uint32_t alpha_iterations = p_surface.uses_transparent ? 2 : 1;
 	for (uint32_t multiview = 0; multiview < multiview_iterations; multiview++) {
-		for (uint32_t lightmap = 0; lightmap < lightmap_iterations; lightmap++) {
+		for (uint32_t lightmap = lightmap_start; lightmap < lightmap_iterations; lightmap++) {
 			for (uint32_t alpha = p_surface.uses_opaque ? 0 : 1; alpha < alpha_iterations; alpha++) {
+				// Transparent draws deliberately do not write motion vectors.
+				const bool motion_only = stable_motion && !alpha;
 				// Generate all the possible variants used during the color pass.
 				pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_COLOR_PASS;
 				pipeline_key.color_pass_flags = 0;
@@ -4758,14 +4801,16 @@ void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePi
 				// View count is assumed to be 2 as the configuration is dependent on the viewport. It's likely a safe assumption for stereo rendering.
 				uint32_t view_count = multiview ? 2 : 1;
 				pipeline_key.framebuffer_format_id = _get_color_framebuffer_format_for_pipeline(buffers_color_format, buffers_can_be_storage, RD::TextureSamples(p_global.texture_samples), false, false, view_count);
-				_mesh_compile_pipeline_for_surface(p_surface.shader, p_surface.mesh_surface, true, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
+				if (!motion_only) {
+					_mesh_compile_pipeline_for_surface(p_surface.shader, p_surface.mesh_surface, true, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
+				}
 
 				// Generate all the possible variants used during the advanced color passes.
 				const uint32_t separate_specular_iterations = p_global.use_separate_specular ? 2 : 1;
-				const uint32_t motion_vectors_iterations = p_global.use_motion_vectors ? 2 : 1;
+				const uint32_t motion_vectors_iterations = stable_motion && alpha ? 1 : (p_global.use_motion_vectors ? 2 : 1);
 				uint32_t base_color_pass_flags = pipeline_key.color_pass_flags;
 				for (uint32_t separate_specular = 0; separate_specular < separate_specular_iterations; separate_specular++) {
-					for (uint32_t motion_vectors = 0; motion_vectors < motion_vectors_iterations; motion_vectors++) {
+					for (uint32_t motion_vectors = motion_only ? 1 : 0; motion_vectors < motion_vectors_iterations; motion_vectors++) {
 						if (!separate_specular && !motion_vectors) {
 							// This case was already generated.
 							continue;
@@ -4886,6 +4931,13 @@ void RenderForwardClustered::_update_dirty_geometry_instances() {
 }
 
 void RenderForwardClustered::_update_dirty_geometry_pipelines() {
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	if (webgpu_scene_precompile && (!webgpu_precompile_requested || !webgpu_precompile_render_context)) {
+		// Keep pending surfaces until the viewport has established its final lightmap,
+		// motion-vector and attachment requirements. Do not consume the dirty list.
+		return;
+	}
+#endif
 	if (global_pipeline_data_required.key != global_pipeline_data_compiled.key) {
 		// Go through the entire list of surfaces and compile pipelines for everything again.
 		SelfList<GeometryInstanceSurfaceDataCache> *list = geometry_surface_compilation_all_list.first();
@@ -5148,6 +5200,9 @@ RenderForwardClustered::RenderForwardClustered() {
 	singleton = this;
 #ifdef WEBGPU_ENABLED
 	webgpu = RD::get_singleton()->get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU;
+#if defined(WEBGPU_ENABLED) && defined(WEB_ENABLED) && !defined(THREADS_ENABLED)
+	webgpu_scene_precompile = webgpu && bool(GLOBAL_DEF_RST("rendering/driver/webgpu/precompile_scene_pipelines", false));
+#endif
 #endif
 
 	/* SCENE SHADER */

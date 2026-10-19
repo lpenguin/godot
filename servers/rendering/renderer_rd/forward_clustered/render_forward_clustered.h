@@ -179,6 +179,9 @@ private:
 	uint64_t lightmap_texture_array_version = 0xFFFFFFFF;
 #ifdef WEBGPU_ENABLED
 	bool webgpu = false; // No arrays of textures, no VoxelGI.
+	bool webgpu_scene_precompile = false;
+	bool webgpu_precompile_render_context = false;
+	bool webgpu_precompile_requested = false;
 #endif
 
 	void _update_render_base_uniform_set();
@@ -846,6 +849,11 @@ public:
 
 	virtual void mesh_generate_pipelines(RID p_mesh, bool p_background_compilation) override;
 	virtual uint32_t get_pipeline_compilations(RSE::PipelineSource p_source) override;
+	virtual void prepare_scene_pipelines() override {
+#ifdef WEBGPU_ENABLED
+		webgpu_precompile_requested = true;
+#endif
+	}
 
 	/* SHADER LIBRARY */
 
