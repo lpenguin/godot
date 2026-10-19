@@ -19,6 +19,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 #include "../oct_inc.glsl"
 
 #include "../area_lights_inc.glsl"
+#include "../shadow_depth_inc.glsl"
 
 #define M_TAU 6.28318530718
 #define M_PI 3.14159265359
@@ -429,7 +430,7 @@ void main() {
 						z_range = directional_lights.data[i].shadow_z_range.w;
 					}
 
-					float depth = texture(sampler2D(directional_shadow_atlas, linear_sampler), pssm_coord.xy).r;
+					float depth = sample_shadow_depth_linear(directional_shadow_atlas, linear_sampler, pssm_coord.xy);
 					float shadow = exp(min(0.0, (pssm_coord.z - depth)) * z_range * INV_FOG_FADE);
 
 					shadow = mix(shadow, 1.0, smoothstep(directional_lights.data[i].fade_from, directional_lights.data[i].fade_to, view_pos.z)); //done with negative values for performance
@@ -519,7 +520,7 @@ void main() {
 							pos.xy = pos.xy * 0.5 + 0.5;
 							pos.xy = uv_rect.xy + pos.xy * uv_rect.zw;
 
-							float depth = texture(sampler2D(shadow_atlas, linear_sampler), pos.xy).r;
+							float depth = sample_shadow_depth_linear(shadow_atlas, linear_sampler, pos.xy);
 
 							shadow_attenuation = mix(1.0 - omni_lights.data[light_index].shadow_opacity, 1.0, exp(min(0.0, (pos.z - depth)) / omni_lights.data[light_index].inv_radius * INV_FOG_FADE));
 						}
@@ -584,7 +585,7 @@ void main() {
 
 							vec3 pos = vec3(splane.xy * spot_lights.data[light_index].atlas_rect.zw + spot_lights.data[light_index].atlas_rect.xy, splane.z);
 
-							float depth = texture(sampler2D(shadow_atlas, linear_sampler), pos.xy).r;
+							float depth = sample_shadow_depth_linear(shadow_atlas, linear_sampler, pos.xy);
 
 							shadow_attenuation = mix(1.0 - spot_lights.data[light_index].shadow_opacity, 1.0, exp(min(0.0, (pos.z - depth)) / spot_lights.data[light_index].inv_radius * INV_FOG_FADE));
 						}
@@ -685,7 +686,7 @@ void main() {
 								pos.xy = pos.xy * 0.5 + 0.5;
 								pos.xy = uv_rect.xy + pos.xy * uv_rect.zw;
 
-								float depth = texture(sampler2D(shadow_atlas, linear_sampler), pos.xy).r;
+								float depth = sample_shadow_depth_linear(shadow_atlas, linear_sampler, pos.xy);
 
 								shadow_attenuation = mix(1.0 - area_lights.data[light_index].shadow_opacity, 1.0, exp(min(0.0, (pos.z - depth)) / inv_center_range * INV_FOG_FADE));
 							}

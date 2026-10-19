@@ -35,6 +35,19 @@ Debug aids added to the engine: `GODOT_WEBGPU_DUMP_SPIRV=<dir>` (driver: dump wh
 `GODOT_DUMP_SPIRV_DIR=<dir>` (RenderingDevice: dump every SPIR-V module that is compiled), `GODOT_VULKAN_SPIRV_1_3=1`
 (Vulkan driver compiles SPIR-V 1.3 like WebGPU would; Tint cannot read 1.4).
 
+## Raw shadow depth reads
+
+WebGPU forbids a `texture_depth_2d` from being statically sampled with a `filtering` sampler binding.
+Chrome/Dawn rejects the whole pipeline even when the corresponding soft-shadow or transmission branch is
+inactive. Forward+ uses the shared `SAMPLER_LINEAR_CLAMP` for both color textures and raw shadow-atlas depth;
+changing its layout to non-filtering would also disable color filtering and require different sampler objects.
+
+`shadow_depth_inc.glsl` instead implements linear-clamp raw depth reads with four clamped `texelFetch` loads and
+bilinear interpolation under `WEBGPU`. Tint emits `textureLoad`, which has no texture/sampler pairing. Blocker
+searches, directional transmission and volumetric-fog shadow fades use this helper. Comparison shadow sampling
+continues to use the comparison sampler, and other backends retain the hardware LOD-zero linear sample.
+Rebake shader containers when changing this helper; replacing only the web template leaves old WGSL in the PCK.
+
 ## CPU uploads
 
 v17 adds `API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT`, enabled only by WebGPU. Its upload workers
