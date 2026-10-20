@@ -63,7 +63,7 @@ static bool shutdown_complete = false;
 // itself entered through a JSPI export, which `main` is and an emscripten_set_main_loop() callback is not. The frame
 // loop therefore runs in `godot_web_main` and waits for the next animation frame between iterations.
 EM_ASYNC_JS(void, godot_web_wait_animation_frame, (), {
-	await new Promise((resolve) = > requestAnimationFrame(resolve));
+	await new Promise(function(resolve) { requestAnimationFrame(resolve); });
 });
 static bool async_loop = false;
 static bool exit_requested = false;
