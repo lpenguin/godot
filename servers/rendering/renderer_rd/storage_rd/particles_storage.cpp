@@ -318,6 +318,11 @@ void ParticlesStorage::_particles_free_data(Particles *particles) {
 		particles->unused_emission_storage_buffer = RID();
 	}
 
+	if (particles->unused_sub_emission_storage_buffer.is_valid()) {
+		RD::get_singleton()->free_rid(particles->unused_sub_emission_storage_buffer);
+		particles->unused_sub_emission_storage_buffer = RID();
+	}
+
 	if (particles->unused_trail_storage_buffer.is_valid()) {
 		RD::get_singleton()->free_rid(particles->unused_trail_storage_buffer);
 		particles->unused_trail_storage_buffer = RID();
@@ -574,11 +579,11 @@ void ParticlesStorage::_particles_allocate_emission_buffer(Particles *particles)
 	}
 }
 
-void ParticlesStorage::_particles_ensure_unused_emission_buffer(Particles *particles) {
-	if (particles->unused_emission_storage_buffer.is_null()) {
+void ParticlesStorage::_particles_ensure_unused_emission_buffer(RID &r_buffer) {
+	if (r_buffer.is_null()) {
 		// For rendering devices that do not support empty arrays (like C++),
 		// we need to size the buffer with at least 1 element.
-		particles->unused_emission_storage_buffer = RD::get_singleton()->storage_buffer_create(sizeof(ParticleEmissionBuffer));
+		r_buffer = RD::get_singleton()->storage_buffer_create(sizeof(ParticleEmissionBuffer));
 	}
 }
 
@@ -812,7 +817,7 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 			if (p_particles->emission_storage_buffer.is_valid()) {
 				u.append_id(p_particles->emission_storage_buffer);
 			} else {
-				_particles_ensure_unused_emission_buffer(p_particles);
+				_particles_ensure_unused_emission_buffer(p_particles->unused_emission_storage_buffer);
 				u.append_id(p_particles->unused_emission_storage_buffer);
 			}
 			uniforms.push_back(u);
@@ -828,8 +833,9 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 				}
 				u.append_id(sub_emitter->emission_storage_buffer);
 			} else {
-				_particles_ensure_unused_emission_buffer(p_particles);
-				u.append_id(p_particles->unused_emission_storage_buffer);
+				// WebGPU rejects overlapping writable bindings, even when emission is disabled.
+				_particles_ensure_unused_emission_buffer(p_particles->unused_sub_emission_storage_buffer);
+				u.append_id(p_particles->unused_sub_emission_storage_buffer);
 			}
 			uniforms.push_back(u);
 		}
