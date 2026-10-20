@@ -205,6 +205,9 @@ private:
 	// Admission markers only; explicit synchronization still uses real queue fences.
 	BufferID pacing_buffers[2];
 	uint32_t pacing_index = 0;
+	bool frame_pacing_supported = false;
+	Error _submit_frame_marker(BufferID p_marker);
+	void _probe_frame_pacing();
 #endif
 	void _track_submission_progress();
 

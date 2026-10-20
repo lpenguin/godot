@@ -863,6 +863,9 @@ Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t 
 	capabilities.device_family = DEVICE_WEBGPU;
 	capabilities.version_major = 1;
 	capabilities.version_minor = 0;
+#ifdef __EMSCRIPTEN__
+	_probe_frame_pacing();
+#endif
 	return OK;
 }
 
@@ -1487,15 +1490,8 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 		_release_swap_chain_image(swap_chain);
 	}
 #ifdef __EMSCRIPTEN__
-	if (p_swap_chains.size() > 0 && pacing_buffers[pacing_index]) {
-		BufferID marker = pacing_buffers[pacing_index];
-		WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
-		wgpuCommandEncoderClearBuffer(encoder, ((BufferInfo *)marker.id)->buffer, 0, 4);
-		WGPUCommandBuffer commands = wgpuCommandEncoderFinish(encoder, nullptr);
-		wgpuQueueSubmit(queue, 1, &commands);
-		wgpuCommandBufferRelease(commands);
-		wgpuCommandEncoderRelease(encoder);
-		ERR_FAIL_COND_V(buffer_map_async(marker) != OK, FAILED);
+	if (frame_pacing_supported && p_swap_chains.size() > 0 && pacing_buffers[pacing_index]) {
+		ERR_FAIL_COND_V(_submit_frame_marker(pacing_buffers[pacing_index]) != OK, FAILED);
 		pacing_index = (pacing_index + 1) % 2;
 	}
 #endif
@@ -1514,6 +1510,45 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 	}
 	return OK;
 }
+
+#ifdef __EMSCRIPTEN__
+Error RenderingDeviceDriverWebGPU::_submit_frame_marker(BufferID p_marker) {
+	WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+	wgpuCommandEncoderClearBuffer(encoder, ((BufferInfo *)p_marker.id)->buffer, 0, 4);
+	WGPUCommandBuffer commands = wgpuCommandEncoderFinish(encoder, nullptr);
+	wgpuQueueSubmit(queue, 1, &commands);
+	wgpuCommandBufferRelease(commands);
+	wgpuCommandEncoderRelease(encoder);
+	return buffer_map_async(p_marker);
+}
+
+void RenderingDeviceDriverWebGPU::_probe_frame_pacing() {
+	// Some browsers batch even empty-queue map notifications at about 100 ms.
+	// Such markers cannot pace interactive frames: retain coalesced progress there.
+	// Probe before scene work exists, so GPU backlog does not select the policy.
+	BufferID probe = buffer_create(4, BUFFER_USAGE_TRANSFER_TO_BIT, MEMORY_ALLOCATION_TYPE_CPU, 0);
+	if (!probe) {
+		return;
+	}
+	uint64_t worst_usec = 0;
+	uint32_t measured_samples = 0;
+	for (uint32_t attempt = 0; attempt < 3; attempt++) {
+		const uint64_t start = OS::get_singleton()->get_ticks_usec();
+		if (_submit_frame_marker(probe) != OK || buffer_map_async_poll(probe, true) != OK) {
+			break;
+		}
+		if (attempt > 0) {
+			// The first response can arrive promptly even on a periodic poller.
+			worst_usec = MAX(worst_usec, OS::get_singleton()->get_ticks_usec() - start);
+			measured_samples++;
+		}
+	}
+	frame_pacing_supported = measured_samples == 2 && worst_usec < 50000;
+	buffer_free(probe);
+	print_verbose(vformat("WebGPU frame admission pacing: %s (empty-queue map notification %s us)",
+			frame_pacing_supported ? "enabled" : "disabled", worst_usec));
+}
+#endif
 
 void RenderingDeviceDriverWebGPU::_track_submission_progress() {
 	submitted_serial++;
@@ -1771,7 +1806,7 @@ RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGPU::swap_chain_acq
 	// Keep at most two submitted frames in flight. Waiting here is safe: no canvas
 	// image has been acquired yet. Waiting in a mid-frame submit produces bursts and
 	// can invalidate the current canvas texture when JSPI yields to the browser.
-	if (acquired_swap_chain_images.get() == 0) {
+	if (frame_pacing_supported && acquired_swap_chain_images.get() == 0) {
 		BufferID &marker = pacing_buffers[pacing_index];
 		if (!marker) {
 			marker = buffer_create(4, BUFFER_USAGE_TRANSFER_TO_BIT, MEMORY_ALLOCATION_TYPE_CPU, 0);
