@@ -332,3 +332,11 @@ are compiled out (the project does not use them). Check `maxSampledTexturesPerSh
 
 After the arrays, the scene shader is blocked by `textureSample`/`dpdx`/`dpdy` in non-uniform control flow (see the report),
 then push constants in browsers, `memoryBarrier`, and the smaller items in the table.
+
+### Particle bindings in combined Vulkan/WebGPU builds
+
+Particle vector-field/collision texture binding counts follow the active device
+family. WebGPU binds one fallback texture; Vulkan retains the seven-element array
+its particle shader declares, even when the binary was built with `webgpu=yes`.
+A compile-time `WEBGPU_ENABLED` check alone applies the browser layout to Vulkan
+and produces rejected particle compute passes during completion/reset effects.

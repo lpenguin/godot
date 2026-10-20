@@ -1107,10 +1107,11 @@ void ParticlesStorage::_particles_process(Particles *p_particles, double p_delta
 				RD::Uniform u;
 				u.uniform_type = RD::UNIFORM_TYPE_TEXTURE;
 				u.binding = 0;
+				uint32_t vector_field_bindings = ParticlesFrameParams::MAX_3D_TEXTURES;
 #ifdef WEBGPU_ENABLED
-				const uint32_t vector_field_bindings = 1; // No binding arrays in WebGPU.
-#else
-				const uint32_t vector_field_bindings = ParticlesFrameParams::MAX_3D_TEXTURES;
+				if (RD::get_singleton()->get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU) {
+					vector_field_bindings = 1; // No binding arrays in WebGPU.
+				}
 #endif
 				for (uint32_t i = 0; i < vector_field_bindings; i++) {
 					RID rd_tex;
