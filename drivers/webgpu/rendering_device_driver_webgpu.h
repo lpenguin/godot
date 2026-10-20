@@ -200,6 +200,12 @@ private:
 	uint64_t submitted_serial = 0;
 	uint64_t completed_serial = 0;
 	uint64_t progress_serial = 0;
+	SafeNumeric<uint32_t> acquired_swap_chain_images;
+#ifdef __EMSCRIPTEN__
+	// Admission markers only; explicit synchronization still uses real queue fences.
+	BufferID pacing_buffers[2];
+	uint32_t pacing_index = 0;
+#endif
 	void _track_submission_progress();
 
 	RenderingShaderContainerFormatWebGPU shader_container_format;

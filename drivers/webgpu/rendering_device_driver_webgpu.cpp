@@ -564,7 +564,6 @@ bool _format_is_depth_stencil(RenderingDeviceCommons::DataFormat p_format) {
 	}
 }
 
-
 WGPUVertexFormat _to_wgpu_vertex_format(RenderingDeviceCommons::DataFormat p_format) {
 	using RDC = RenderingDeviceCommons;
 	switch (p_format) {
@@ -741,6 +740,13 @@ RenderingDeviceDriverWebGPU::~RenderingDeviceDriverWebGPU() {
 	if (submission_progress.pending && !submission_progress.done.is_set()) {
 		_wait_for(submission_progress.future, submission_progress.done);
 	}
+#ifdef __EMSCRIPTEN__
+	for (BufferID marker : pacing_buffers) {
+		if (marker) {
+			buffer_free(marker);
+		}
+	}
+#endif
 	if (queue) {
 		wgpuQueueRelease(queue);
 	}
@@ -1469,7 +1475,6 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 		}
 		// Everything recorded so far is on the queue: later writes to the push constant ring are ordered after it.
 		push_constant_next_slot = 0;
-		_track_submission_progress();
 	}
 	for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
 		SwapChainInfo *swap_chain = (SwapChainInfo *)p_swap_chains[i].id;
@@ -1480,6 +1485,22 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 		}
 #endif
 		_release_swap_chain_image(swap_chain);
+	}
+#ifdef __EMSCRIPTEN__
+	if (p_swap_chains.size() > 0 && pacing_buffers[pacing_index]) {
+		BufferID marker = pacing_buffers[pacing_index];
+		WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+		wgpuCommandEncoderClearBuffer(encoder, ((BufferInfo *)marker.id)->buffer, 0, 4);
+		WGPUCommandBuffer commands = wgpuCommandEncoderFinish(encoder, nullptr);
+		wgpuQueueSubmit(queue, 1, &commands);
+		wgpuCommandBufferRelease(commands);
+		wgpuCommandEncoderRelease(encoder);
+		ERR_FAIL_COND_V(buffer_map_async(marker) != OK, FAILED);
+		pacing_index = (pacing_index + 1) % 2;
+	}
+#endif
+	if (!submit.is_empty()) {
+		_track_submission_progress();
 	}
 	if (p_cmd_fence) {
 		FenceInfo *fence = (FenceInfo *)p_cmd_fence.id;
@@ -1520,7 +1541,10 @@ void RenderingDeviceDriverWebGPU::_track_submission_progress() {
 		progress_serial = submitted_serial;
 		submission_progress.future = wgpuQueueOnSubmittedWorkDone(queue, callback);
 	}
-	if (submitted_serial - completed_serial >= 32) {
+	// A JSPI wait while a canvas image is acquired lets the browser expire that image.
+	// Defer the batch limit until presentation releases it. Browser swap chains also
+	// bound their own frame queue before acquisition, independently of upload submits.
+	if (submitted_serial - completed_serial >= 32 && acquired_swap_chain_images.get() == 0) {
 		_wait_for(submission_progress.future, submission_progress.done);
 		completed_serial = progress_serial;
 		submission_progress.pending = false;
@@ -1592,6 +1616,7 @@ void RenderingDeviceDriverWebGPU::_release_swap_chain_image(SwapChainInfo *p_swa
 		wgpuTextureRelease(p_swap_chain->current_texture->texture);
 		memdelete(p_swap_chain->current_texture);
 		p_swap_chain->current_texture = nullptr;
+		acquired_swap_chain_images.decrement();
 	}
 }
 
@@ -1742,6 +1767,20 @@ RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGPU::swap_chain_acq
 	}
 
 	_release_swap_chain_image(info);
+#ifdef __EMSCRIPTEN__
+	// Keep at most two submitted frames in flight. Waiting here is safe: no canvas
+	// image has been acquired yet. Waiting in a mid-frame submit produces bursts and
+	// can invalidate the current canvas texture when JSPI yields to the browser.
+	if (acquired_swap_chain_images.get() == 0) {
+		BufferID &marker = pacing_buffers[pacing_index];
+		if (!marker) {
+			marker = buffer_create(4, BUFFER_USAGE_TRANSFER_TO_BIT, MEMORY_ALLOCATION_TYPE_CPU, 0);
+			ERR_FAIL_COND_V(!marker, FramebufferID());
+		} else {
+			ERR_FAIL_COND_V(buffer_map_async_poll(marker, true) != OK, FramebufferID());
+		}
+	}
+#endif
 
 	WGPUSurfaceTexture surface_texture = {};
 	wgpuSurfaceGetCurrentTexture(info->surface, &surface_texture);
@@ -1772,6 +1811,7 @@ RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGPU::swap_chain_acq
 	texture->view_dimension = WGPUTextureViewDimension_2D;
 	texture->owns_texture = false;
 	info->current_texture = texture;
+	acquired_swap_chain_images.increment();
 
 	FramebufferInfo *framebuffer = memnew(FramebufferInfo);
 	framebuffer->render_pass = info->render_pass;
