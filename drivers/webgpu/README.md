@@ -340,3 +340,19 @@ family. WebGPU binds one fallback texture; Vulkan retains the seven-element arra
 its particle shader declares, even when the binary was built with `webgpu=yes`.
 A compile-time `WEBGPU_ENABLED` check alone applies the browser layout to Vulkan
 and produces rejected particle compute passes during completion/reset effects.
+
+### Anonymous buffers beside combined samplers
+
+Tint splits a combined texture/sampler and can shift later resource bindings to
+resolve conflicts. Anonymous GLSL blocks have no reflected variable name, so the
+name-based WGSL fixup cannot restore their slots. A readonly input can then occupy
+the output slot and invalidate a compute pipeline. Pass explicit sampler mappings
+to Tint before its conflict resolution; the existing WGSL fixup places the split
+sampler at the engine's offset while anonymous storage buffers keep their slots.
+Container format 12 invalidates stale baked WGSL.
+
+The local `[WebGPU][Compute] Combined sampler preserves anonymous storage bindings`
+regression requires `GODOT_TINT_PATH`. It checks read/write reflection, WGSL binding
+slots and actual GPU results. It fails before the fix, and both WoodWorks brick
+classifiers also execute with the corrected container. Unsupported unused built-in
+shader diagnostics in a full native WebGPU renderer remain separate.

@@ -40,6 +40,7 @@ TEST_FORCE_LINK(test_webgpu_compute)
 #include "core/os/thread.h"
 #include "drivers/webgpu/rendering_context_driver_webgpu.h"
 #include "drivers/webgpu/rendering_device_driver_webgpu.h"
+#include "drivers/webgpu/rendering_shader_container_webgpu.h"
 #include "servers/rendering/rendering_device.h"
 
 namespace TestWebGPUCompute {
@@ -101,6 +102,113 @@ struct WebGPUFixture {
 		rd->sync();
 	}
 };
+
+TEST_CASE("[WebGPU][Compute] Combined sampler preserves anonymous storage bindings") {
+	if (OS::get_singleton()->get_environment("GODOT_TINT_PATH").is_empty()) {
+		WARN("GODOT_TINT_PATH is required for the WGSL binding regression.");
+		return;
+	}
+	WebGPUFixture fx;
+	REQUIRE(fx.init());
+	String error;
+	Vector<RDC::ShaderStageSPIRVData> stages;
+	RDC::ShaderStageSPIRVData stage;
+	stage.shader_stage = RDC::SHADER_STAGE_COMPUTE;
+	stage.spirv = fx.rd->shader_compile_spirv_from_source(RDC::SHADER_STAGE_COMPUTE, R"(
+#version 450
+layout(local_size_x=1) in;
+layout(set=0,binding=0,std140) uniform Params { uint count; } params;
+layout(set=0,binding=1) uniform sampler3D field;
+layout(set=0,binding=2,std430) readonly buffer Candidates { uvec4 cells[]; };
+layout(set=0,binding=3,std430) writeonly buffer Results { uint needed[]; };
+void main() {
+    uint id=gl_GlobalInvocationID.x;
+    if (id<params.count) needed[id]=cells[id].x+uint(texelFetch(field,ivec3(0),0).r);
+}
+)",
+			RDC::SHADER_LANGUAGE_GLSL, &error, false);
+	REQUIRE_MESSAGE(!stage.spirv.is_empty(), error.utf8().get_data());
+	stages.push_back(stage);
+	RenderingShaderContainerFormatWebGPU format;
+	Ref<RenderingShaderContainer> container = format.create_container();
+	REQUIRE(container->set_code_from_spirv("anonymous_classification_buffers", stages));
+	const RDC::ShaderReflection reflection = container->get_shader_reflection();
+	REQUIRE(reflection.uniform_sets.size() == 1);
+	REQUIRE(reflection.uniform_sets[0].size() == 4);
+	CHECK_FALSE(reflection.uniform_sets[0][2].writable);
+	CHECK(reflection.uniform_sets[0][3].writable);
+	const PackedByteArray &bytes = container->shaders[0].code_compressed_bytes;
+	const String wgsl = String::utf8((const char *)bytes.ptr(), bytes.size());
+	INFO(wgsl);
+	CHECK(wgsl.contains("@binding(2u) var<storage, read>"));
+	CHECK(wgsl.contains("@binding(3u) var<storage, read_write>"));
+	CHECK(wgsl.contains("@binding(501u) var field_sampler : sampler;"));
+
+	RenderingDevice *rd = fx.rd;
+	RID shader = rd->shader_create_from_spirv(stages, "anonymous_classification_dispatch");
+	REQUIRE(shader.is_valid());
+	const uint32_t count = 4;
+	Vector<uint8_t> parameters;
+	parameters.resize(16);
+	memset(parameters.ptrw(), 0, 16);
+	memcpy(parameters.ptrw(), &count, sizeof(count));
+	RID params = rd->uniform_buffer_create(16, parameters);
+	Vector<uint8_t> inputs;
+	inputs.resize(count * 16);
+	memset(inputs.ptrw(), 0, inputs.size());
+	for (uint32_t index = 0; index < count; index++) {
+		const uint32_t value = index * 7;
+		memcpy(inputs.ptrw() + index * 16, &value, sizeof(value));
+	}
+	RID candidates = rd->storage_buffer_create(inputs.size(), inputs);
+	RID results = rd->storage_buffer_create(count * 4);
+	RenderingDevice::TextureFormat texture_format;
+	texture_format.texture_type = RDC::TEXTURE_TYPE_3D;
+	texture_format.format = RDC::DATA_FORMAT_R8G8B8A8_UNORM;
+	texture_format.width = texture_format.height = texture_format.depth = 1;
+	texture_format.usage_bits = RDC::TEXTURE_USAGE_SAMPLING_BIT;
+	Vector<Vector<uint8_t>> layers;
+	Vector<uint8_t> pixel;
+	pixel.resize(4);
+	memset(pixel.ptrw(), 255, 4);
+	layers.push_back(pixel);
+	RID texture = rd->texture_create(texture_format, RenderingDevice::TextureView(), layers);
+	RID sampler = rd->sampler_create(RenderingDevice::SamplerState());
+	Vector<RenderingDevice::Uniform> uniforms;
+	for (uint32_t binding = 0; binding < 4; binding++) {
+		RenderingDevice::Uniform uniform;
+		uniform.binding = binding;
+		if (binding == 0) {
+			uniform.uniform_type = RDC::UNIFORM_TYPE_UNIFORM_BUFFER;
+			uniform.append_id(params);
+		} else if (binding == 1) {
+			uniform.uniform_type = RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE;
+			uniform.append_id(sampler);
+			uniform.append_id(texture);
+		} else {
+			uniform.uniform_type = RDC::UNIFORM_TYPE_STORAGE_BUFFER;
+			uniform.append_id(binding == 2 ? candidates : results);
+		}
+		uniforms.push_back(uniform);
+	}
+	RID uniform_set = rd->uniform_set_create(uniforms, shader, 0);
+	REQUIRE(uniform_set.is_valid());
+	fx.dispatch(shader, uniform_set, count, 1, 1);
+	Vector<uint8_t> output = rd->buffer_get_data(results);
+	REQUIRE(output.size() == int(count * 4));
+	for (uint32_t index = 0; index < count; index++) {
+		uint32_t value;
+		memcpy(&value, output.ptr() + index * 4, sizeof(value));
+		CHECK(value == index * 7 + 1);
+	}
+	rd->free_rid(uniform_set);
+	rd->free_rid(sampler);
+	rd->free_rid(texture);
+	rd->free_rid(results);
+	rd->free_rid(candidates);
+	rd->free_rid(params);
+	rd->free_rid(shader);
+}
 
 TEST_CASE("[WebGPU][Compute] Storage and uniform buffers") {
 	WebGPUFixture fx;

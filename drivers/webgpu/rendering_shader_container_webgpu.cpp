@@ -40,7 +40,7 @@
 
 #include <thirdparty/spirv-reflect/spirv_reflect.h>
 
-const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 11;
+const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 12;
 
 namespace {
 
@@ -793,7 +793,7 @@ void _wgsl_matrix_fields_to_vectors(String &r_wgsl) {
 
 // Converts SPIR-V to WGSL with the Tint command line tool (GODOT_TINT_PATH). Browsers only accept WGSL, so the
 // conversion happens when the container is baked, never in the player.
-bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const String &p_name, String &r_wgsl) {
+bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const String &p_name, const String &p_sampler_mapping, String &r_wgsl) {
 	// Shader stages and variants are compiled concurrently, including identical names.
 	static SafeNumeric<uint64_t> request_id;
 	const String directory = OS::get_singleton()->get_temp_path();
@@ -815,6 +815,12 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 	// `diagnostic(off, derivative_uniformity)` to the WGSL, which browsers accept.
 	arguments.push_back("--allow-non-uniform-derivatives");
 	arguments.push_back("true");
+	// Reserve split sampler bindings before Tint resolves conflicts. Otherwise an
+	// anonymous storage buffer can shift and cannot be restored by its absent name.
+	if (!p_sampler_mapping.is_empty()) {
+		arguments.push_back("--sampler-mapping");
+		arguments.push_back(p_sampler_mapping);
+	}
 	arguments.push_back("--format");
 	arguments.push_back("wgsl");
 	arguments.push_back("-o");
@@ -1026,8 +1032,20 @@ bool RenderingShaderContainerWebGPU::_set_code_from_spirv(const ReflectShader &p
 		shader.code_decompressed_size = 0;
 #ifndef WEB_ENABLED
 		if (!tint.is_empty()) {
+			String sampler_mapping;
+			for (uint32_t set = 0; set < p_shader.uniform_sets.size(); set++) {
+				for (const ReflectUniform &uniform : p_shader.uniform_sets[set]) {
+					if (uniform.type == RDC::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE &&
+							uniform.stages.has_flag(RDC::ShaderStage(1U << stages[i].shader_stage))) {
+						if (!sampler_mapping.is_empty()) {
+							sampler_mapping += " ";
+						}
+						sampler_mapping += vformat("%d,%d:%d,%d", set, uniform.binding, set, uniform.binding + COMBINED_SAMPLER_BINDING_OFFSET);
+					}
+				}
+			}
 			String wgsl;
-			ERR_FAIL_COND_V(!_spirv_to_wgsl(tint, spirv, String::utf8(shader_name.get_data()), wgsl), false);
+			ERR_FAIL_COND_V(!_spirv_to_wgsl(tint, spirv, String::utf8(shader_name.get_data()), sampler_mapping, wgsl), false);
 			_annotate_from_wgsl(wgsl, uniform_keys, named_bindings, binding_extras);
 			const CharString utf8 = wgsl.utf8();
 			shader.code_compressed_bytes.resize(utf8.length());
