@@ -32,14 +32,14 @@
 
 #include "rendering_device_driver_webgpu.h"
 
-#include "thirdparty/spirv-reflect/spirv_reflect.h"
-
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/io/file_access.h"
 #include "core/os/os.h"
 #include "core/string/print_string.h"
 #include "core/templates/pair.h"
+
+#include <thirdparty/spirv-reflect/spirv_reflect.h>
 
 namespace {
 
@@ -563,7 +563,6 @@ bool _format_is_depth_stencil(RenderingDeviceCommons::DataFormat p_format) {
 			return false;
 	}
 }
-
 
 WGPUVertexFormat _to_wgpu_vertex_format(RenderingDeviceCommons::DataFormat p_format) {
 	using RDC = RenderingDeviceCommons;

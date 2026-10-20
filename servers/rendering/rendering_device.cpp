@@ -4249,7 +4249,7 @@ static void _dump_spirv_modules(const Vector<RenderingDevice::ShaderStageSPIRVDa
 	if (dump_dir.is_empty()) {
 		return;
 	}
-	static const char *stage_suffix[] = { "vert", "frag", "tesc", "tese", "comp" };
+	static const char *stage_suffix[] = { "vert", "frag", "tesc", "tese", "comp" }; // codespell:ignore tese
 	String safe_name;
 	for (int i = 0; i < p_shader_name.length(); i++) {
 		const char32_t c = p_shader_name[i];

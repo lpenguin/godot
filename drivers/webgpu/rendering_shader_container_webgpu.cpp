@@ -37,7 +37,8 @@
 #include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
 #include "core/templates/safe_refcount.h"
-#include "thirdparty/spirv-reflect/spirv_reflect.h"
+
+#include <thirdparty/spirv-reflect/spirv_reflect.h>
 
 const uint32_t RenderingShaderContainerWebGPU::FORMAT_VERSION = 11;
 
@@ -101,7 +102,6 @@ Vector<uint8_t> _strip_buffer_non_readable(const Vector<uint8_t> &p_spirv) {
 	result.resize(out_count * sizeof(uint32_t));
 	return result;
 }
-
 
 // Tint does not read some instructions that WGSL cannot express:
 // * OpMemoryBarrier (GLSL memoryBarrierShared(), groupMemoryBarrier()). Godot always pairs it with barrier(), and the
@@ -832,16 +832,29 @@ bool _spirv_to_wgsl(const String &p_tint, const Vector<uint8_t> &p_spirv, const 
 	// Storage texture formats that browsers lack are allocated in a wider one by the driver (see _storage_format there);
 	// textureStore and textureLoad always use four-component vectors, so only the format in the declaration changes.
 	static const char *const STORAGE_FORMAT_MAP[][2] = {
-		{ "r8unorm", "rgba8unorm" }, { "rg8unorm", "rgba8unorm" },
-		{ "r8snorm", "rgba8snorm" }, { "rg8snorm", "rgba8snorm" },
-		{ "r8uint", "rgba8uint" }, { "rg8uint", "rgba8uint" },
-		{ "r8sint", "rgba8sint" }, { "rg8sint", "rgba8sint" },
-		{ "r16uint", "rgba16uint" }, { "rg16uint", "rgba16uint" }, { "rgb10a2uint", "rgba16uint" },
-		{ "r16sint", "rgba16sint" }, { "rg16sint", "rgba16sint" },
-		{ "r16float", "rgba16float" }, { "rg16float", "rgba16float" },
-		{ "r16unorm", "rgba16float" }, { "rg16unorm", "rgba16float" }, { "rgba16unorm", "rgba16float" },
-		{ "r16snorm", "rgba16float" }, { "rg16snorm", "rgba16float" }, { "rgba16snorm", "rgba16float" },
-		{ "rg11b10ufloat", "rgba16float" }, { "rgb10a2unorm", "rgba16float" },
+		{ "r8unorm", "rgba8unorm" },
+		{ "rg8unorm", "rgba8unorm" },
+		{ "r8snorm", "rgba8snorm" },
+		{ "rg8snorm", "rgba8snorm" },
+		{ "r8uint", "rgba8uint" },
+		{ "rg8uint", "rgba8uint" },
+		{ "r8sint", "rgba8sint" },
+		{ "rg8sint", "rgba8sint" },
+		{ "r16uint", "rgba16uint" },
+		{ "rg16uint", "rgba16uint" },
+		{ "rgb10a2uint", "rgba16uint" },
+		{ "r16sint", "rgba16sint" },
+		{ "rg16sint", "rgba16sint" },
+		{ "r16float", "rgba16float" },
+		{ "rg16float", "rgba16float" },
+		{ "r16unorm", "rgba16float" },
+		{ "rg16unorm", "rgba16float" },
+		{ "rgba16unorm", "rgba16float" },
+		{ "r16snorm", "rgba16float" },
+		{ "rg16snorm", "rgba16float" },
+		{ "rgba16snorm", "rgba16float" },
+		{ "rg11b10ufloat", "rgba16float" },
+		{ "rgb10a2unorm", "rgba16float" },
 	};
 	for (const char *dimension : { "2d", "2d_array", "3d" }) {
 		for (const char *access : { "write", "read", "read_write" }) {

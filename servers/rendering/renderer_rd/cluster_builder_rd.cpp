@@ -351,7 +351,7 @@ void ClusterBuilderRD::setup(Size2i p_screen_size, uint32_t p_max_elements, RID 
 		framebuffer = RD::get_singleton()->framebuffer_create(attachments);
 	} else
 #endif
-	if (use_msaa) {
+			if (use_msaa) {
 		framebuffer = RD::get_singleton()->framebuffer_create_empty(p_screen_size / div_value, RD::TEXTURE_SAMPLES_4);
 	} else {
 		framebuffer = RD::get_singleton()->framebuffer_create_empty(p_screen_size / div_value);

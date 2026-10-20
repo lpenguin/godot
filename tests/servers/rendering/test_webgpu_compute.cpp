@@ -28,7 +28,6 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-
 #include "tests/test_macros.h"
 
 TEST_FORCE_LINK(test_webgpu_compute)
@@ -182,7 +181,8 @@ void main() {
 	uint i = gl_GlobalInvocationID.x;
 	values[i] = values[i] * 3u + i;
 }
-)", "mid_frame_readback");
+)",
+			"mid_frame_readback");
 	REQUIRE(shader.is_valid());
 	RID pipeline = rd->compute_pipeline_create(shader);
 	REQUIRE(pipeline.is_valid());

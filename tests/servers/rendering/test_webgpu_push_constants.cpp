@@ -1,5 +1,5 @@
 /**************************************************************************/
-/*  test_webgpu_push_constants.cpp                                              */
+/*  test_webgpu_push_constants.cpp                                        */
 /**************************************************************************/
 /*                         This file is part of:                          */
 /*                             GODOT ENGINE                               */
@@ -27,7 +27,6 @@
 /* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
-
 
 #include "tests/test_macros.h"
 

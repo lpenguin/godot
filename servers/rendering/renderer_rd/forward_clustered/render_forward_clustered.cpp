@@ -3556,8 +3556,8 @@ RID RenderForwardClustered::_setup_render_pass_uniform_set(RenderListType p_rend
 			}
 		} else {
 #endif
-		RD::Uniform u(RD::UNIFORM_TYPE_TEXTURE, 7, textures);
-		uniforms.push_back(u);
+			RD::Uniform u(RD::UNIFORM_TYPE_TEXTURE, 7, textures);
+			uniforms.push_back(u);
 #ifdef WEBGPU_ENABLED
 		}
 #endif

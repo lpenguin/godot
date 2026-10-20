@@ -32,10 +32,9 @@
 
 #include "rendering_context_driver_webgpu.h"
 
-#include "rendering_device_driver_webgpu.h"
-#include "webgpu_wait.h"
-
 #include "core/string/print_string.h"
+#include "drivers/webgpu/rendering_device_driver_webgpu.h"
+#include "drivers/webgpu/webgpu_wait.h"
 
 namespace {
 struct AdapterRequest {

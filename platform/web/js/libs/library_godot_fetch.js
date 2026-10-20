@@ -216,17 +216,18 @@ const GodotFetch = {
 			return 0;
 		}
 		let to_read = p_buf_size;
+		let buffer_position = p_buf;
 		const chunks = obj.chunks;
 		while (to_read && chunks.length) {
 			const chunk = obj.chunks[0];
 			if (chunk.length > to_read) {
-				GodotRuntime.heapCopy(HEAP8, chunk.slice(0, to_read), p_buf);
+				GodotRuntime.heapCopy(HEAP8, chunk.slice(0, to_read), buffer_position);
 				chunks[0] = chunk.slice(to_read);
 				to_read = 0;
 			} else {
 				// Append after what was already copied, and drop the chunk that was consumed (the first one).
-				GodotRuntime.heapCopy(HEAP8, chunk, p_buf);
-				p_buf += chunk.length;
+				GodotRuntime.heapCopy(HEAP8, chunk, buffer_position);
+				buffer_position += chunk.length;
 				to_read -= chunk.length;
 				chunks.shift();
 			}

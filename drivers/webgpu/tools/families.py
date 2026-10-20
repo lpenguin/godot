@@ -1,24 +1,39 @@
-import re, os, sys, collections
+from __future__ import annotations
+
+import collections
+import os
+import re
+import sys
+from typing import TypedDict
+
+
+class FailureBlock(TypedDict):
+    name: str
+    first: str
+    msgs: list[str]
+
 
 dump_dir = sys.argv[1]
 log_path = sys.argv[2]
 
+
 # All modules by family. File: <Family>_<variant>__<hash>.<stage>.spv  (base without stage = <Family>_<variant>__<hash>)
-def family(base):
+def family(base: str) -> str:
     return re.sub(r"_\d+__[0-9a-f]+$", "", base)
 
-total = collections.Counter()
-bases = set()
-for f in os.listdir(dump_dir):
-    if f.endswith(".spv"):
-        base = f.rsplit(".", 2)[0]
+
+total: collections.Counter[str] = collections.Counter()
+bases: set[str] = set()
+for filename in os.listdir(dump_dir):
+    if filename.endswith(".spv"):
+        base = filename.rsplit(".", 2)[0]
         bases.add(base)
         total[family(base)] += 1
 
-fail_reason = {}
-cur = None
+fail_reason: dict[str, str] = {}
+cur: FailureBlock | None = None
 log = open(log_path, encoding="utf-8", errors="replace").read().split("\n")
-blocks = []
+blocks: list[FailureBlock] = []
 for line in log:
     m = re.match(r"ERROR: WebGPU: Tint failed for '([^']+)'", line)
     if m:
@@ -28,10 +43,13 @@ for line in log:
     if line.startswith(("ERROR: Condition", "CONVERT")):
         cur = None
         continue
-    if cur is not None and (line.startswith("error:") or line.startswith("spirv:") or "Failed to parse SPIR-V:" in line):
+    if cur is not None and (
+        line.startswith("error:") or line.startswith("spirv:") or "Failed to parse SPIR-V:" in line
+    ):
         cur["msgs"].append(line.strip())
 
-def reason(b):
+
+def reason(b: FailureBlock) -> str:
     text = " ".join(b["msgs"]) + " " + b["first"]
     for key, label in [
         ("arrays of handle types", "texture arrays"),
@@ -50,14 +68,15 @@ def reason(b):
             return label
     return "other"
 
-failed = collections.defaultdict(collections.Counter)
-failed_total = collections.Counter()
+
+failed: collections.defaultdict[str, collections.Counter[str]] = collections.defaultdict(collections.Counter)
+failed_total: collections.Counter[str] = collections.Counter()
 for b in blocks:
     fam = family(b["name"])
     failed[fam][reason(b)] += 1
     failed_total[fam] += 1
 
-rows = []
+rows: list[tuple[str, int, int, int, str]] = []
 for fam, n in total.items():
     f = failed_total.get(fam, 0)
     rows.append((fam, n, n - f, f, ", ".join("%s %d" % kv for kv in failed[fam].most_common(3))))
@@ -66,4 +85,7 @@ print("%-40s %5s %5s %5s  %s" % ("family", "total", "ok", "fail", "reasons"))
 for r in rows:
     print("%-40s %5d %5d %5d  %s" % r)
 print()
-print("modules: %d, ok: %d, failed: %d" % (sum(total.values()), sum(total.values()) - sum(failed_total.values()), sum(failed_total.values())))
+print(
+    "modules: %d, ok: %d, failed: %d"
+    % (sum(total.values()), sum(total.values()) - sum(failed_total.values()), sum(failed_total.values()))
+)
