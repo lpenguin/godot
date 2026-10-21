@@ -864,6 +864,9 @@ Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t 
 
 bool RenderingDeviceDriverWebGPU::_geometry_buffer_allocate(BufferInfo *p_buffer, WGPUBufferUsage p_usage) {
 	MutexLock lock(submission_mutex);
+	// Geometry bindings need four bytes, but a buffer/texture copy can require
+	// the offset to align to a compressed texel block (up to sixteen bytes).
+	const uint64_t allocation_size = _align_up(p_buffer->size, 16);
 	for (GeometryPage *page : geometry_pages) {
 		if (page->usage != p_usage) {
 			continue;
@@ -894,15 +897,15 @@ bool RenderingDeviceDriverWebGPU::_geometry_buffer_allocate(BufferInfo *p_buffer
 		}
 		for (uint32_t i = 0; i < page->free_ranges.size(); i++) {
 			GeometryRange &range = page->free_ranges[i];
-			if (range.size < p_buffer->size) {
+			if (range.size < allocation_size) {
 				continue;
 			}
 			p_buffer->geometry_page = page;
 			p_buffer->buffer = page->buffer;
 			p_buffer->offset = range.offset;
 			const bool needs_clear = range.needs_clear;
-			range.offset += p_buffer->size;
-			range.size -= p_buffer->size;
+			range.offset += allocation_size;
+			range.size -= allocation_size;
 			if (range.size == 0) {
 				page->free_ranges.remove_at(i);
 			}
@@ -929,7 +932,7 @@ bool RenderingDeviceDriverWebGPU::_geometry_buffer_allocate(BufferInfo *p_buffer
 	page->buffer = buffer;
 	page->usage = p_usage;
 	page->live_buffers = 1;
-	page->free_ranges.push_back({ p_buffer->size, GEOMETRY_PAGE_SIZE - p_buffer->size, 0 });
+	page->free_ranges.push_back({ allocation_size, GEOMETRY_PAGE_SIZE - allocation_size, 0 });
 	geometry_pages.push_back(page);
 	p_buffer->geometry_page = page;
 	p_buffer->buffer = buffer;
@@ -1018,7 +1021,7 @@ void RenderingDeviceDriverWebGPU::buffer_free(BufferID p_buffer) {
 			wgpuBufferRelease(page->buffer);
 			memdelete(page);
 		} else {
-			page->retired_ranges.push_back({ info->offset, info->size, submitted_serial, true });
+			page->retired_ranges.push_back({ info->offset, _align_up(info->size, 16), submitted_serial, true });
 		}
 		memdelete(info);
 		return;

@@ -53,7 +53,8 @@ Rebake shader containers when changing this helper; replacing only the web templ
 The driver suballocates GPU-only vertex/index buffers up to 64 KiB from 4 MiB
 pages with matching usage flags. Storage, uniform, indirect, CPU-mapped,
 persistently dynamic and larger buffers retain individual allocations. Logical
-buffer sizes and IDs remain independent; draw bindings, clears, texture transfers
+buffer sizes and IDs remain independent; ranges align to sixteen bytes for texel
+block transfers. Draw bindings, clears, texture transfers
 and readback copies apply each buffer's page offset and retain logical bounds.
 Same-page buffer copies use a temporary copy buffer because
 [WebGPU prohibits the same GPUBuffer as copy source and destination](https://www.w3.org/TR/webgpu/#dom-gpucommandencoder-copybuffertobuffer).

@@ -452,6 +452,8 @@ TEST_CASE("[WebGPU][Compute] Geometry page ranges wait for actual submission com
 	using Driver = RenderingDeviceDriverWebGPU;
 	const auto usage = Driver::BUFFER_USAGE_VERTEX_BIT | Driver::BUFFER_USAGE_TRANSFER_TO_BIT | Driver::BUFFER_USAGE_TRANSFER_FROM_BIT;
 	const uint64_t before = driver.get_total_memory_used();
+	auto prefix = driver.buffer_create(12, usage, Driver::MEMORY_ALLOCATION_TYPE_GPU, 0);
+	REQUIRE(bool(prefix));
 	auto first = driver.buffer_create(64, usage, Driver::MEMORY_ALLOCATION_TYPE_GPU, 0);
 	auto second = driver.buffer_create(64, usage, Driver::MEMORY_ALLOCATION_TYPE_GPU, 0);
 	REQUIRE(bool(first));
@@ -461,6 +463,7 @@ TEST_CASE("[WebGPU][Compute] Geometry page ranges wait for actual submission com
 	REQUIRE(first_info->geometry_page != nullptr);
 	CHECK(first_info->buffer == second_info->buffer);
 	CHECK(first_info->offset != second_info->offset);
+	CHECK(first_info->offset % 16 == 0);
 	CHECK(driver.get_total_memory_used() - before == 4 * 1024 * 1024);
 	const uint64_t first_offset = first_info->offset;
 	uint8_t pattern[64];
@@ -468,10 +471,26 @@ TEST_CASE("[WebGPU][Compute] Geometry page ranges wait for actual submission com
 	WGPUQueue queue = wgpuDeviceGetQueue(driver.device_get());
 	wgpuQueueWriteBuffer(queue, first_info->buffer, first_offset, pattern, sizeof(pattern));
 	wgpuQueueRelease(queue);
+	// RGBA32F has a sixteen-byte texel block. A preceding twelve-byte logical
+	// buffer must not misalign this texture transfer's physical source offset.
+	Driver::TextureFormat texture_format;
+	texture_format.format = RDC::DATA_FORMAT_R32G32B32A32_SFLOAT;
+	texture_format.texture_type = RDC::TEXTURE_TYPE_2D;
+	texture_format.width = 4;
+	texture_format.height = 1;
+	auto texture = driver.texture_create(texture_format, Driver::TextureView());
+	REQUIRE(bool(texture));
+	auto texture_download = driver.buffer_create(64, Driver::BUFFER_USAGE_TRANSFER_TO_BIT, Driver::MEMORY_ALLOCATION_TYPE_CPU, 0);
+	REQUIRE(bool(texture_download));
+	Driver::BufferTextureCopyRegion texture_region;
+	texture_region.row_pitch = 256;
+	texture_region.texture_region_size = Vector3i(4, 1, 1);
 	const auto command = driver.command_buffer_create({});
 	REQUIRE(driver.command_buffer_begin(command));
 	Driver::BufferCopyRegion region = { 0, 0, 64 };
 	driver.command_copy_buffer(command, first, second, region);
+	driver.command_copy_buffer_to_texture(command, first, texture, Driver::TEXTURE_LAYOUT_COPY_DST_OPTIMAL, texture_region);
+	driver.command_copy_texture_to_buffer(command, texture, Driver::TEXTURE_LAYOUT_COPY_SRC_OPTIMAL, texture_download, texture_region);
 	driver.command_buffer_end(command);
 	REQUIRE(driver.command_queue_execute_and_present(Driver::CommandQueueID(1), {}, command, {}, {}, {}) == OK);
 	driver.buffer_free(first);
@@ -488,6 +507,12 @@ TEST_CASE("[WebGPU][Compute] Geometry page ranges wait for actual submission com
 	auto fourth = driver.buffer_create(64, usage, Driver::MEMORY_ALLOCATION_TYPE_GPU, 0);
 	REQUIRE(bool(fourth));
 	CHECK(((Driver::BufferInfo *)fourth.id)->offset == first_offset);
+	const uint8_t *texture_data = driver.buffer_map(texture_download);
+	REQUIRE(texture_data != nullptr);
+	CHECK(memcmp(texture_data, pattern, sizeof(pattern)) == 0);
+	driver.buffer_unmap(texture_download);
+	driver.buffer_free(texture_download);
+	driver.texture_free(texture);
 	// Recycled space must not expose the previous logical buffer's contents.
 	auto download = driver.buffer_create(64, Driver::BUFFER_USAGE_TRANSFER_TO_BIT, Driver::MEMORY_ALLOCATION_TYPE_CPU, 0);
 	REQUIRE(bool(download));
@@ -508,6 +533,7 @@ TEST_CASE("[WebGPU][Compute] Geometry page ranges wait for actual submission com
 	driver.buffer_free(second);
 	driver.buffer_free(third);
 	driver.buffer_free(fourth);
+	driver.buffer_free(prefix);
 	CHECK(driver.get_total_memory_used() == before);
 	memdelete((Driver::CommandBufferInfo *)command.id);
 }
