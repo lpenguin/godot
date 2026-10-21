@@ -862,6 +862,81 @@ Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t 
 
 // ----- Buffers -----
 
+bool RenderingDeviceDriverWebGPU::_geometry_buffer_allocate(BufferInfo *p_buffer, WGPUBufferUsage p_usage) {
+	MutexLock lock(submission_mutex);
+	for (GeometryPage *page : geometry_pages) {
+		if (page->usage != p_usage) {
+			continue;
+		}
+		bool collected = false;
+		for (uint32_t i = 0; i < page->retired_ranges.size();) {
+			if (page->retired_ranges[i].retire_serial <= completed_serial) {
+				page->free_ranges.push_back(page->retired_ranges[i]);
+				page->retired_ranges.remove_at(i);
+				collected = true;
+			} else {
+				i++;
+			}
+		}
+		if (collected) {
+			page->free_ranges.sort();
+			for (uint32_t i = 1; i < page->free_ranges.size();) {
+				GeometryRange &previous = page->free_ranges[i - 1];
+				const GeometryRange &current = page->free_ranges[i];
+				if (previous.offset + previous.size == current.offset) {
+					previous.size += current.size;
+					previous.needs_clear |= current.needs_clear;
+					page->free_ranges.remove_at(i);
+				} else {
+					i++;
+				}
+			}
+		}
+		for (uint32_t i = 0; i < page->free_ranges.size(); i++) {
+			GeometryRange &range = page->free_ranges[i];
+			if (range.size < p_buffer->size) {
+				continue;
+			}
+			p_buffer->geometry_page = page;
+			p_buffer->buffer = page->buffer;
+			p_buffer->offset = range.offset;
+			const bool needs_clear = range.needs_clear;
+			range.offset += p_buffer->size;
+			range.size -= p_buffer->size;
+			if (range.size == 0) {
+				page->free_ranges.remove_at(i);
+			}
+			page->live_buffers++;
+			// A logical buffer has the same zero initialization as a new GPUBuffer.
+			// Reuse is allowed only after the existing queue completion marker retires
+			// its old uses. Queue ordering alone cannot protect unsubmitted commands.
+			if (needs_clear) {
+				Vector<uint8_t> zeros;
+				zeros.resize(p_buffer->size);
+				memset(zeros.ptrw(), 0, zeros.size());
+				wgpuQueueWriteBuffer(queue, page->buffer, p_buffer->offset, zeros.ptr(), zeros.size());
+			}
+			return true;
+		}
+	}
+	WGPUBufferDescriptor desc = {};
+	desc.label = _sv("Godot geometry page");
+	desc.usage = p_usage;
+	desc.size = GEOMETRY_PAGE_SIZE;
+	WGPUBuffer buffer = wgpuDeviceCreateBuffer(device, &desc);
+	ERR_FAIL_NULL_V(buffer, false);
+	GeometryPage *page = memnew(GeometryPage);
+	page->buffer = buffer;
+	page->usage = p_usage;
+	page->live_buffers = 1;
+	page->free_ranges.push_back({ p_buffer->size, GEOMETRY_PAGE_SIZE - p_buffer->size, 0 });
+	geometry_pages.push_back(page);
+	p_buffer->geometry_page = page;
+	p_buffer->buffer = buffer;
+	total_memory_used += GEOMETRY_PAGE_SIZE;
+	return true;
+}
+
 RenderingDeviceDriver::BufferID RenderingDeviceDriverWebGPU::buffer_create(uint64_t p_size, BitField<BufferUsageBits> p_usage, MemoryAllocationType p_allocation_type, uint64_t p_frames_drawn) {
 	BufferInfo *info = memnew(BufferInfo);
 	info->size = _align_up(p_size, 4);
@@ -902,6 +977,16 @@ RenderingDeviceDriver::BufferID RenderingDeviceDriverWebGPU::buffer_create(uint6
 		}
 	}
 
+	const WGPUBufferUsage geometry_usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_Index;
+	const WGPUBufferUsage copy_usage = WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
+	if (!info->cpu && !info->dynamic && info->size > 0 && info->size <= GEOMETRY_MAX_BUFFER_SIZE && (usage & geometry_usage) && !(usage & ~(geometry_usage | copy_usage))) {
+		if (!_geometry_buffer_allocate(info, usage)) {
+			memdelete(info);
+			return BufferID();
+		}
+		return BufferID(info);
+	}
+
 	WGPUBufferDescriptor desc = {};
 	desc.usage = usage;
 	desc.size = info->dynamic ? info->total_size : info->size;
@@ -920,6 +1005,24 @@ bool RenderingDeviceDriverWebGPU::buffer_set_texel_format(BufferID p_buffer, Dat
 
 void RenderingDeviceDriverWebGPU::buffer_free(BufferID p_buffer) {
 	BufferInfo *info = (BufferInfo *)p_buffer.id;
+	if (info->geometry_page) {
+		MutexLock lock(submission_mutex);
+		GeometryPage *page = info->geometry_page;
+		page->live_buffers--;
+		if (page->live_buffers == 0) {
+			// RD frees only after the final use has been submitted. Destroying an
+			// empty page preserves submitted uses through WebGPU's object lifetime.
+			geometry_pages.erase(page);
+			total_memory_used -= GEOMETRY_PAGE_SIZE;
+			wgpuBufferDestroy(page->buffer);
+			wgpuBufferRelease(page->buffer);
+			memdelete(page);
+		} else {
+			page->retired_ranges.push_back({ info->offset, info->size, submitted_serial, true });
+		}
+		memdelete(info);
+		return;
+	}
 	if (info->map_pending) {
 		buffer_map_async_poll(p_buffer, true);
 	}
@@ -2291,7 +2394,7 @@ void RenderingDeviceDriverWebGPU::command_clear_buffer(CommandBufferID p_cmd_buf
 	BufferInfo *buffer = (BufferInfo *)p_buffer.id;
 	_end_compute_pass(cmd);
 	const uint64_t size = p_size == BUFFER_WHOLE_SIZE ? buffer->size - p_offset : p_size;
-	wgpuCommandEncoderClearBuffer(cmd->encoder, buffer->buffer, p_offset, _align_up(size, 4));
+	wgpuCommandEncoderClearBuffer(cmd->encoder, buffer->buffer, buffer->offset + p_offset, _align_up(size, 4));
 }
 
 void RenderingDeviceDriverWebGPU::command_copy_buffer(CommandBufferID p_cmd_buffer, BufferID p_src_buffer, BufferID p_dst_buffer, VectorView<BufferCopyRegion> p_regions) {
@@ -2306,7 +2409,20 @@ void RenderingDeviceDriverWebGPU::command_copy_buffer(CommandBufferID p_cmd_buff
 			// Flush the shadow copy of the upload staging buffer right before the GPU reads it.
 			wgpuQueueWriteBuffer(queue, src->buffer, region.src_offset, src->shadow.ptr() + region.src_offset, size);
 		}
-		wgpuCommandEncoderCopyBufferToBuffer(cmd->encoder, src->buffer, region.src_offset, dst->buffer, region.dst_offset, size);
+		if (src->buffer == dst->buffer) {
+			// WebGPU rejects same-buffer copies even for distinct, non-overlapping
+			// logical buffers. The encoder retains the scratch buffer until submit.
+			WGPUBufferDescriptor desc = {};
+			desc.size = size;
+			desc.usage = WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
+			WGPUBuffer scratch = wgpuDeviceCreateBuffer(device, &desc);
+			ERR_FAIL_NULL(scratch);
+			wgpuCommandEncoderCopyBufferToBuffer(cmd->encoder, src->buffer, src->offset + region.src_offset, scratch, 0, size);
+			wgpuCommandEncoderCopyBufferToBuffer(cmd->encoder, scratch, 0, dst->buffer, dst->offset + region.dst_offset, size);
+			wgpuBufferRelease(scratch);
+		} else {
+			wgpuCommandEncoderCopyBufferToBuffer(cmd->encoder, src->buffer, src->offset + region.src_offset, dst->buffer, dst->offset + region.dst_offset, size);
+		}
 		if (dst->cpu) {
 			dst->gpu_written = true;
 		}
@@ -2475,7 +2591,7 @@ void RenderingDeviceDriverWebGPU::command_copy_buffer_to_texture(CommandBufferID
 
 		WGPUTexelCopyBufferInfo buffer_info = {};
 		buffer_info.buffer = src->buffer;
-		buffer_info.layout.offset = region.buffer_offset;
+		buffer_info.layout.offset = src->offset + region.buffer_offset;
 		buffer_info.layout.bytesPerRow = region.row_pitch;
 		buffer_info.layout.rowsPerImage = rows;
 		WGPUTexelCopyTextureInfo texture_info = {};
@@ -2503,7 +2619,7 @@ void RenderingDeviceDriverWebGPU::command_copy_texture_to_buffer(CommandBufferID
 		const BufferTextureCopyRegion &region = p_regions[i];
 		WGPUTexelCopyBufferInfo buffer_info = {};
 		buffer_info.buffer = dst->buffer;
-		buffer_info.layout.offset = region.buffer_offset;
+		buffer_info.layout.offset = dst->offset + region.buffer_offset;
 		buffer_info.layout.bytesPerRow = region.row_pitch;
 		buffer_info.layout.rowsPerImage = (region.texture_region_size.y + block_height - 1) / block_height;
 		WGPUTexelCopyTextureInfo texture_info = {};
@@ -2795,14 +2911,16 @@ void RenderingDeviceDriverWebGPU::command_render_bind_vertex_buffers(CommandBuff
 			offset += (p_dynamic_offsets & 0x3) * buffer->size;
 			p_dynamic_offsets >>= 2;
 		}
-		wgpuRenderPassEncoderSetVertexBuffer(cmd->render_pass, i, buffer->buffer, offset, WGPU_WHOLE_SIZE);
+		const uint64_t size = buffer->geometry_page ? buffer->size - p_offsets[i] : WGPU_WHOLE_SIZE;
+		wgpuRenderPassEncoderSetVertexBuffer(cmd->render_pass, i, buffer->buffer, buffer->offset + offset, size);
 	}
 }
 
 void RenderingDeviceDriverWebGPU::command_render_bind_index_buffer(CommandBufferID p_cmd_buffer, BufferID p_buffer, IndexBufferFormat p_format, uint64_t p_offset) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	const BufferInfo *buffer = (const BufferInfo *)p_buffer.id;
-	wgpuRenderPassEncoderSetIndexBuffer(cmd->render_pass, buffer->buffer, p_format == INDEX_BUFFER_FORMAT_UINT16 ? WGPUIndexFormat_Uint16 : WGPUIndexFormat_Uint32, p_offset, WGPU_WHOLE_SIZE);
+	const uint64_t size = buffer->geometry_page ? buffer->size - p_offset : WGPU_WHOLE_SIZE;
+	wgpuRenderPassEncoderSetIndexBuffer(cmd->render_pass, buffer->buffer, p_format == INDEX_BUFFER_FORMAT_UINT16 ? WGPUIndexFormat_Uint16 : WGPUIndexFormat_Uint32, buffer->offset + p_offset, size);
 }
 
 void RenderingDeviceDriverWebGPU::command_render_set_blend_constants(CommandBufferID p_cmd_buffer, const Color &p_constants) {

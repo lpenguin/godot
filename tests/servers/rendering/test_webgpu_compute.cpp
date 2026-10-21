@@ -413,6 +413,105 @@ struct UploadCountingContext : RenderingContextDriverWebGPU {
 	}
 };
 
+TEST_CASE("[WebGPU][Compute] Geometry pages preserve copies clears and neighboring buffers") {
+	WebGPUFixture fx;
+	REQUIRE(fx.init());
+	RenderingDevice *rd = fx.rd;
+	Vector<RID> buffers;
+	Vector<PackedByteArray> expected;
+	for (int i = 0; i < 512; i++) {
+		PackedByteArray data;
+		data.resize(128);
+		for (int j = 0; j < data.size(); j++) {
+			data.ptrw()[j] = (i * 31 + j) & 255;
+		}
+		RID buffer = i % 2 ? rd->vertex_buffer_create(data.size(), data) : rd->index_buffer_create(64, RDC::INDEX_BUFFER_FORMAT_UINT16, data);
+		REQUIRE(buffer.is_valid());
+		buffers.push_back(buffer);
+		expected.push_back(data);
+	}
+	// Same-page copies require a scratch resource: WebGPU forbids copying a
+	// GPUBuffer to itself even when logical source/destination ranges differ.
+	REQUIRE(rd->buffer_copy(buffers[1], buffers[3], 12, 24, 32) == OK);
+	memcpy(expected.write[3].ptrw() + 24, expected[1].ptr() + 12, 32);
+	REQUIRE(rd->buffer_copy(buffers[0], buffers[2], 8, 16, 48) == OK);
+	memcpy(expected.write[2].ptrw() + 16, expected[0].ptr() + 8, 48);
+	REQUIRE(rd->buffer_clear(buffers[5], 20, 28) == OK);
+	memset(expected.write[5].ptrw() + 20, 0, 28);
+	for (int i = 0; i < buffers.size(); i++) {
+		CHECK(rd->buffer_get_data(buffers[i]) == expected[i]);
+		rd->free_rid(buffers[i]);
+	}
+}
+
+TEST_CASE("[WebGPU][Compute] Geometry page ranges wait for actual submission completion") {
+	RenderingContextDriverWebGPU context;
+	REQUIRE(context.initialize() == OK);
+	RenderingDeviceDriverWebGPU driver(&context);
+	REQUIRE(driver.initialize(0, 2) == OK);
+	using Driver = RenderingDeviceDriverWebGPU;
+	const auto usage = Driver::BUFFER_USAGE_VERTEX_BIT | Driver::BUFFER_USAGE_TRANSFER_TO_BIT | Driver::BUFFER_USAGE_TRANSFER_FROM_BIT;
+	const uint64_t before = driver.get_total_memory_used();
+	auto first = driver.buffer_create(64, usage, Driver::MEMORY_ALLOCATION_TYPE_GPU, 0);
+	auto second = driver.buffer_create(64, usage, Driver::MEMORY_ALLOCATION_TYPE_GPU, 0);
+	REQUIRE(bool(first));
+	REQUIRE(bool(second));
+	auto *first_info = (Driver::BufferInfo *)first.id;
+	auto *second_info = (Driver::BufferInfo *)second.id;
+	REQUIRE(first_info->geometry_page != nullptr);
+	CHECK(first_info->buffer == second_info->buffer);
+	CHECK(first_info->offset != second_info->offset);
+	CHECK(driver.get_total_memory_used() - before == 4 * 1024 * 1024);
+	const uint64_t first_offset = first_info->offset;
+	uint8_t pattern[64];
+	memset(pattern, 0xa5, sizeof(pattern));
+	WGPUQueue queue = wgpuDeviceGetQueue(driver.device_get());
+	wgpuQueueWriteBuffer(queue, first_info->buffer, first_offset, pattern, sizeof(pattern));
+	wgpuQueueRelease(queue);
+	const auto command = driver.command_buffer_create({});
+	REQUIRE(driver.command_buffer_begin(command));
+	Driver::BufferCopyRegion region = { 0, 0, 64 };
+	driver.command_copy_buffer(command, first, second, region);
+	driver.command_buffer_end(command);
+	REQUIRE(driver.command_queue_execute_and_present(Driver::CommandQueueID(1), {}, command, {}, {}, {}) == OK);
+	driver.buffer_free(first);
+	auto third = driver.buffer_create(64, usage, Driver::MEMORY_ALLOCATION_TYPE_GPU, 0);
+	REQUIRE(bool(third));
+	CHECK(((Driver::BufferInfo *)third.id)->offset != first_offset);
+	// Existing bounded submission tracking obtains real completion; the pool
+	// neither adds an eager fence nor treats submission as GPU completion.
+	for (int i = 0; i < 64; i++) {
+		REQUIRE(driver.command_buffer_begin(command));
+		driver.command_buffer_end(command);
+		REQUIRE(driver.command_queue_execute_and_present(Driver::CommandQueueID(1), {}, command, {}, {}, {}) == OK);
+	}
+	auto fourth = driver.buffer_create(64, usage, Driver::MEMORY_ALLOCATION_TYPE_GPU, 0);
+	REQUIRE(bool(fourth));
+	CHECK(((Driver::BufferInfo *)fourth.id)->offset == first_offset);
+	// Recycled space must not expose the previous logical buffer's contents.
+	auto download = driver.buffer_create(64, Driver::BUFFER_USAGE_TRANSFER_TO_BIT, Driver::MEMORY_ALLOCATION_TYPE_CPU, 0);
+	REQUIRE(bool(download));
+	REQUIRE(driver.command_buffer_begin(command));
+	driver.command_copy_buffer(command, fourth, download, region);
+	driver.command_buffer_end(command);
+	const auto fence = driver.fence_create();
+	REQUIRE(driver.command_queue_execute_and_present(Driver::CommandQueueID(1), {}, command, {}, fence, {}) == OK);
+	REQUIRE(driver.fence_wait(fence) == OK);
+	const uint8_t *mapped = driver.buffer_map(download);
+	REQUIRE(mapped != nullptr);
+	for (int i = 0; i < 64; i++) {
+		CHECK(mapped[i] == 0);
+	}
+	driver.buffer_unmap(download);
+	driver.buffer_free(download);
+	driver.fence_free(fence);
+	driver.buffer_free(second);
+	driver.buffer_free(third);
+	driver.buffer_free(fourth);
+	CHECK(driver.get_total_memory_used() == before);
+	memdelete((Driver::CommandBufferInfo *)command.id);
+}
+
 TEST_CASE("[WebGPU][Compute] Upload worker reuse preserves queued snapshots without fence waits") {
 	UploadCountingContext context;
 	REQUIRE(context.initialize() == OK);

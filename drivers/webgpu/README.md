@@ -48,6 +48,30 @@ searches, directional transmission and volumetric-fog shadow fades use this help
 continues to use the comparison sampler, and other backends retain the hardware LOD-zero linear sample.
 Rebake shader containers when changing this helper; replacing only the web template leaves old WGSL in the PCK.
 
+## Small geometry buffers
+
+The driver suballocates GPU-only vertex/index buffers up to 64 KiB from 4 MiB
+pages with matching usage flags. Storage, uniform, indirect, CPU-mapped,
+persistently dynamic and larger buffers retain individual allocations. Logical
+buffer sizes and IDs remain independent; draw bindings, clears, texture transfers
+and readback copies apply each buffer's page offset and retain logical bounds.
+Same-page buffer copies use a temporary copy buffer because
+[WebGPU prohibits the same GPUBuffer as copy source and destination](https://www.w3.org/TR/webgpu/#dom-gpucommandencoder-copybuffertobuffer).
+
+RD disposal already requires the final resource use to have been submitted.
+Freed ranges in a still-live page are quarantined against that submission serial
+and become reusable only when the existing real queue-completion tracker retires
+them. Reuse restores zero initialization. Allocations, disposal and submission
+serials share the submission mutex; no per-allocation/per-frame wait or new
+completion callback is introduced. Empty pages are destroyed as ordinary WebGPU
+resources, whose submitted uses remain retained by the implementation.
+
+Local GPU regressions cover partial same-page copies, clears, neighboring vertex
+and index contents, actual-completion gating, zero initialization on reuse and
+page release. The existing queued snapshot, independent readback, dynamic-buffer
+and draw tests also exercise the changed bindings/copy paths. These tests remain
+local validation; the release workflow builds artifacts without GPU profiling.
+
 ## CPU uploads
 
 v17 adds `API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT`, enabled only by WebGPU. Its upload workers

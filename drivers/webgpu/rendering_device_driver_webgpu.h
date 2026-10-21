@@ -45,9 +45,26 @@ class RenderingDeviceDriverWebGPU : public RenderingDeviceDriver {
 
 public:
 	// ----- Resource bookkeeping. Opaque driver IDs are pointers to these. -----
+	struct GeometryRange {
+		uint64_t offset = 0;
+		uint64_t size = 0;
+		uint64_t retire_serial = 0;
+		bool needs_clear = false;
+		bool operator<(const GeometryRange &p_other) const { return offset < p_other.offset; }
+	};
+
+	struct GeometryPage {
+		WGPUBuffer buffer = nullptr;
+		WGPUBufferUsage usage = 0;
+		uint32_t live_buffers = 0;
+		LocalVector<GeometryRange> free_ranges;
+		LocalVector<GeometryRange> retired_ranges;
+	};
 
 	struct BufferInfo {
 		WGPUBuffer buffer = nullptr;
+		GeometryPage *geometry_page = nullptr;
+		uint64_t offset = 0;
 		uint64_t size = 0;
 		BitField<BufferUsageBits> usage = {};
 		// CPU buffers have a shadow copy: WebGPU has no persistently mapped memory.
@@ -200,6 +217,11 @@ private:
 	static constexpr uint32_t PUSH_CONSTANT_SLOTS = 16384;
 	uint64_t total_memory_used = 0;
 	Mutex submission_mutex;
+	// Protected by submission_mutex, including allocation/free on loader threads.
+	LocalVector<GeometryPage *> geometry_pages;
+	static constexpr uint64_t GEOMETRY_PAGE_SIZE = 4 * 1024 * 1024;
+	static constexpr uint64_t GEOMETRY_MAX_BUFFER_SIZE = 64 * 1024;
+	bool _geometry_buffer_allocate(BufferInfo *p_buffer, WGPUBufferUsage p_usage);
 	FenceInfo submission_progress;
 	uint64_t submitted_serial = 0;
 	uint64_t completed_serial = 0;
