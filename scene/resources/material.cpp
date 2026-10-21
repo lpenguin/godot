@@ -42,6 +42,10 @@
 #include "scene/resources/texture.h"
 #include "servers/rendering/rendering_server.h"
 
+#ifdef WEBGPU_ENABLED
+#include "drivers/webgpu/webgpu_compilation_trace.h"
+#endif
+
 void Material::set_next_pass(const Ref<Material> &p_pass) {
 	for (Ref<Material> pass_child = p_pass; pass_child.is_valid(); pass_child = pass_child->get_next_pass()) {
 		ERR_FAIL_COND_MSG(pass_child == this, "Can't set as next_pass one of its parents to prevent crashes due to recursive loop.");
@@ -2041,6 +2045,17 @@ void fragment() {)";
 	// other tasks in the WorkerThreadPool simultaneously creating materials, which
 	// may also hold the shared shader_map_mutex lock.
 	RID new_shader = RS::get_singleton()->shader_create_from_code(code);
+#ifdef WEBGPU_ENABLED
+	if (WebGPUCompilationTrace::enabled()) {
+		// A generated shader is shared by materials with the same feature key.
+		// Identify a representative resource, not a unique draw instance.
+		String resource = get_path();
+		if (resource.is_empty() && textures[TEXTURE_ALBEDO].is_valid()) {
+			resource = textures[TEXTURE_ALBEDO]->get_path();
+		}
+		RS::get_singleton()->shader_set_path_hint(new_shader, "shared " + get_class() + " source=" + resource + " name=" + get_name() + " code=" + code.sha256_text());
+	}
+#endif
 
 	MutexLock lock(shader_map_mutex);
 
