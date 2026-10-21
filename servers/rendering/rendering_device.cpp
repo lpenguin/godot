@@ -46,6 +46,11 @@
 
 #include "modules/modules_enabled.gen.h"
 
+#ifdef WEBGPU_ENABLED
+#include "core/object/script_language.h"
+#include "drivers/webgpu/webgpu_compilation_trace.h"
+#endif
+
 #ifdef MODULE_GLSLANG_ENABLED
 #include "modules/glslang/shader_compile.h"
 #endif
@@ -10254,7 +10259,23 @@ RID RenderingDevice::_shader_create_from_spirv(const Ref<RDShaderSPIRV> &p_spirv
 		}
 		stage_data.push_back(sd);
 	}
-	return shader_create_from_spirv(stage_data);
+	RID shader = shader_create_from_spirv(stage_data);
+#ifdef WEBGPU_ENABLED
+	if (shader.is_valid() && get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU && WebGPUCompilationTrace::enabled()) {
+		String label = p_shader_name;
+		if (label.is_empty()) {
+			for (int i = 0; i < ScriptServer::get_language_count(); i++) {
+				const Vector<ScriptLanguage::StackInfo> stack = ScriptServer::get_language(i)->debug_get_current_stack_info();
+				if (!stack.is_empty()) {
+					label = stack[0].file + ":" + itos(stack[0].line) + " (" + stack[0].func + ")";
+					break;
+				}
+			}
+		}
+		set_resource_name(shader, label);
+	}
+#endif
+	return shader;
 }
 
 RID RenderingDevice::_uniform_set_create(const TypedArray<RDUniform> &p_uniforms, RID p_shader, uint32_t p_shader_set) {

@@ -38,6 +38,7 @@
 #include "core/os/os.h"
 #include "core/string/print_string.h"
 #include "core/templates/pair.h"
+#include "drivers/webgpu/webgpu_compilation_trace.h"
 
 #include <thirdparty/spirv-reflect/spirv_reflect.h>
 
@@ -1849,7 +1850,9 @@ WGPUShaderModule RenderingDeviceDriverWebGPU::_shader_module(ShaderInfo *p_shade
 		WGPUShaderModuleDescriptor descriptor = {};
 		descriptor.label = _sv(name.get_data());
 		descriptor.nextInChain = &source.chain;
+		WebGPUCompilationTrace::Scope trace("shader_module:" + itos(p_stage), p_shader->trace_name());
 		p_shader->modules[p_stage] = wgpuDeviceCreateShaderModule(device, &descriptor);
+		trace.set_accepted(p_shader->modules[p_stage] != nullptr);
 	}
 #endif
 	return p_shader->modules[p_stage];
@@ -1930,7 +1933,11 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 			break;
 #endif
 		}
-		info->modules[shader.shader_stage] = wgpuDeviceCreateShaderModule(device, &module_desc);
+		{
+			WebGPUCompilationTrace::Scope trace("shader_module:" + itos(shader.shader_stage), info->trace_name());
+			info->modules[shader.shader_stage] = wgpuDeviceCreateShaderModule(device, &module_desc);
+			trace.set_accepted(info->modules[shader.shader_stage] != nullptr);
+		}
 		if (!info->modules[shader.shader_stage]) {
 			failed = true;
 			break;
@@ -2707,7 +2714,13 @@ void RenderingDeviceDriverWebGPU::command_render_clear_attachments(CommandBuffer
 void RenderingDeviceDriverWebGPU::command_bind_render_pipeline(CommandBufferID p_cmd_buffer, PipelineID p_pipeline) {
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	const PipelineInfo *pipeline = (const PipelineInfo *)p_pipeline.id;
-	wgpuRenderPassEncoderSetPipeline(cmd->render_pass, pipeline->render);
+	if (pipeline->trace_id && pipeline->trace_use_count.get() == 0 && pipeline->trace_use_count.increment() == 1) {
+		WebGPUCompilationTrace::Scope trace("first_bind_render", pipeline->shader->trace_name(), pipeline->trace_id);
+		wgpuRenderPassEncoderSetPipeline(cmd->render_pass, pipeline->render);
+		trace.set_accepted(true);
+	} else {
+		wgpuRenderPassEncoderSetPipeline(cmd->render_pass, pipeline->render);
+	}
 	cmd->shader = pipeline->shader;
 	cmd->group0_dirty = true;
 	wgpuRenderPassEncoderSetStencilReference(cmd->render_pass, pipeline->stencil_reference);
@@ -2928,6 +2941,7 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_c
 		desc.fragment = &fragment;
 	}
 
+	WebGPUCompilationTrace::Scope trace("render_pipeline", shader->trace_name());
 	WGPURenderPipeline pipeline = nullptr;
 #ifdef __EMSCRIPTEN__
 	if (ProjectSettings::get_singleton()->has_setting("rendering/driver/webgpu/precompile_scene_pipelines") && bool(GLOBAL_GET("rendering/driver/webgpu/precompile_scene_pipelines"))) {
@@ -2960,9 +2974,11 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::render_pipeline_c
 	{
 		pipeline = wgpuDeviceCreateRenderPipeline(device, &desc);
 	}
+	trace.set_accepted(pipeline != nullptr);
 	ERR_FAIL_NULL_V(pipeline, PipelineID());
 
 	PipelineInfo *info = memnew(PipelineInfo);
+	info->trace_id = trace.get_id();
 	info->render = pipeline;
 	info->shader = shader;
 	info->stencil_reference = stencil_reference;
@@ -2975,7 +2991,13 @@ void RenderingDeviceDriverWebGPU::command_bind_compute_pipeline(CommandBufferID 
 	CommandBufferInfo *cmd = (CommandBufferInfo *)p_cmd_buffer.id;
 	const PipelineInfo *pipeline = (const PipelineInfo *)p_pipeline.id;
 	_ensure_compute_pass(cmd);
-	wgpuComputePassEncoderSetPipeline(cmd->compute_pass, pipeline->compute);
+	if (pipeline->trace_id && pipeline->trace_use_count.get() == 0 && pipeline->trace_use_count.increment() == 1) {
+		WebGPUCompilationTrace::Scope trace("first_bind_compute", pipeline->shader->trace_name(), pipeline->trace_id);
+		wgpuComputePassEncoderSetPipeline(cmd->compute_pass, pipeline->compute);
+		trace.set_accepted(true);
+	} else {
+		wgpuComputePassEncoderSetPipeline(cmd->compute_pass, pipeline->compute);
+	}
 	cmd->shader = pipeline->shader;
 	cmd->group0_dirty = true;
 }
@@ -3061,11 +3083,14 @@ RenderingDeviceDriver::PipelineID RenderingDeviceDriverWebGPU::compute_pipeline_
 	desc.compute.entryPoint = _sv("main");
 	desc.compute.constantCount = constants.size();
 	desc.compute.constants = constants.ptr();
+	WebGPUCompilationTrace::Scope trace("compute_pipeline", shader->trace_name());
 	WGPUComputePipeline pipeline = wgpuDeviceCreateComputePipeline(device, &desc);
+	trace.set_accepted(pipeline != nullptr);
 	ERR_FAIL_NULL_V(pipeline, PipelineID());
 
 	PipelineInfo *info = memnew(PipelineInfo);
 	info->compute = pipeline;
+	info->trace_id = trace.get_id();
 	info->shader = shader;
 	return PipelineID(info);
 }
@@ -3174,6 +3199,9 @@ void RenderingDeviceDriverWebGPU::end_segment() {
 // ----- Misc -----
 
 void RenderingDeviceDriverWebGPU::set_object_name(ObjectType p_type, ID p_driver_id, const String &p_name) {
+	if (p_type == OBJECT_TYPE_SHADER && WebGPUCompilationTrace::enabled()) {
+		((ShaderInfo *)p_driver_id.id)->trace_resource_name = p_name;
+	}
 }
 
 uint64_t RenderingDeviceDriverWebGPU::get_resource_native_handle(DriverResource p_type, ID p_driver_id) {

@@ -36,6 +36,10 @@
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/material_storage.h"
 
+#ifdef WEBGPU_ENABLED
+#include "drivers/webgpu/webgpu_compilation_trace.h"
+#endif
+
 using namespace RendererSceneRenderImplementation;
 
 void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
@@ -502,6 +506,11 @@ void SceneShaderForwardClustered::ShaderData::_create_pipeline(PipelineKey p_pip
 	RID shader_rid = get_shader_variant(p_pipeline_key.version, p_pipeline_key.color_pass_flags, p_pipeline_key.ubershader);
 	ERR_FAIL_COND(shader_rid.is_null());
 
+#ifdef WEBGPU_ENABLED
+	if (RD::get_singleton()->get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU && WebGPUCompilationTrace::enabled() && !path.is_empty()) {
+		RD::get_singleton()->set_resource_name(shader_rid, path);
+	}
+#endif
 	RID pipeline = RD::get_singleton()->render_pipeline_create(shader_rid, p_pipeline_key.framebuffer_format_id, p_pipeline_key.vertex_format_id, primitive_rd, raster_state, multisample_state, depth_stencil_state, blend_state, 0, 0, specialization_constants);
 	ERR_FAIL_COND(pipeline.is_null());
 

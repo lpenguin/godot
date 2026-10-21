@@ -98,6 +98,8 @@ public:
 
 	struct ShaderInfo {
 		String name;
+		String trace_resource_name;
+		String trace_name() const { return name + (trace_resource_name.is_empty() ? String() : " | " + trace_resource_name); }
 		ShaderReflection reflection;
 		Vector<RenderingShaderContainerWebGPU::BindingExtra> binding_extras; // Flattened over all sets.
 		LocalVector<WGPUBindGroupLayout> set_layouts;
@@ -124,6 +126,8 @@ public:
 	};
 
 	struct PipelineInfo {
+		uint64_t trace_id = 0;
+		mutable SafeNumeric<uint32_t> trace_use_count{ 0 };
 		WGPUComputePipeline compute = nullptr;
 		WGPURenderPipeline render = nullptr;
 		ShaderInfo *shader = nullptr;
