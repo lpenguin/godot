@@ -796,6 +796,8 @@ Error RenderingDeviceDriverWebGPU::initialize(uint32_t p_device_index, uint32_t 
 		WGPUFeatureName_ShaderF16,
 		WGPUFeatureName_Float32Filterable,
 		WGPUFeatureName_RG11B10UfloatRenderable,
+		WGPUFeatureName_TextureFormatsTier1,
+		WGPUFeatureName_TextureFormatsTier2,
 		WGPUFeatureName_TimestampQuery,
 		WGPUFeatureName_IndirectFirstInstance,
 #ifndef __EMSCRIPTEN__
@@ -1565,6 +1567,42 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 			cmd->finished = nullptr;
 		}
 	}
+#ifdef __EMSCRIPTEN__
+	// Canvas images expire when JSPI yields to the browser, including while a pipeline or fence is
+	// awaited. Render to an owned image and acquire the canvas only for this synchronous final copy.
+	for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
+		SwapChainInfo *swap_chain = (SwapChainInfo *)p_swap_chains[i].id;
+		if (!swap_chain->current_texture) {
+			continue;
+		}
+		WGPUSurfaceTexture image = {};
+		wgpuSurfaceGetCurrentTexture(swap_chain->surface, &image);
+		const bool usable = image.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal || image.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal;
+		if (!usable || !image.texture || wgpuTextureGetWidth(image.texture) != swap_chain->width || wgpuTextureGetHeight(image.texture) != swap_chain->height) {
+			context_driver->surface_set_needs_resize(swap_chain->surface_id, true);
+			if (image.texture) {
+				wgpuTextureRelease(image.texture);
+			}
+			continue;
+		}
+		if (image.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) {
+			context_driver->surface_set_needs_resize(swap_chain->surface_id, true);
+		}
+		WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+		WGPUTexelCopyTextureInfo source = {};
+		source.texture = swap_chain->current_texture->texture;
+		source.aspect = WGPUTextureAspect_All;
+		WGPUTexelCopyTextureInfo destination = {};
+		destination.texture = image.texture;
+		destination.aspect = WGPUTextureAspect_All;
+		WGPUExtent3D extent = { swap_chain->width, swap_chain->height, 1 };
+		wgpuCommandEncoderCopyTextureToTexture(encoder, &source, &destination, &extent);
+		submit.push_back(wgpuCommandEncoderFinish(encoder, nullptr));
+		wgpuCommandEncoderRelease(encoder);
+		wgpuTextureRelease(image.texture);
+	}
+	// No asynchronous operation may occur between canvas acquisition above and Queue.Submit below.
+#endif
 	if (!submit.is_empty()) {
 		if (push_constant_next_slot > 0) {
 			wgpuQueueWriteBuffer(queue, push_constant_ring, 0, push_constant_upload.ptr(), (uint64_t)push_constant_next_slot * RenderingShaderContainerWebGPU::PUSH_CONSTANT_SLOT_SIZE);
@@ -1577,16 +1615,15 @@ Error RenderingDeviceDriverWebGPU::command_queue_execute_and_present(CommandQueu
 		push_constant_next_slot = 0;
 		_track_submission_progress();
 	}
+#ifndef __EMSCRIPTEN__
 	for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
 		SwapChainInfo *swap_chain = (SwapChainInfo *)p_swap_chains[i].id;
-#ifndef __EMSCRIPTEN__
-		// The browser presents the canvas by itself once the frame's task ends.
 		if (swap_chain->current_texture) {
 			wgpuSurfacePresent(swap_chain->surface);
 		}
-#endif
 		_release_swap_chain_image(swap_chain);
 	}
+#endif
 	if (p_cmd_fence) {
 		FenceInfo *fence = (FenceInfo *)p_cmd_fence.id;
 		WGPUQueueWorkDoneCallbackInfo callback_info = {};
@@ -1692,11 +1729,7 @@ void RenderingDeviceDriverWebGPU::_release_swap_chain_image(SwapChainInfo *p_swa
 		p_swap_chain->current_framebuffer = nullptr;
 	}
 	if (p_swap_chain->current_texture) {
-		if (p_swap_chain->current_texture->view) {
-			wgpuTextureViewRelease(p_swap_chain->current_texture->view);
-		}
-		wgpuTextureRelease(p_swap_chain->current_texture->texture);
-		memdelete(p_swap_chain->current_texture);
+		texture_free(TextureID(p_swap_chain->current_texture));
 		p_swap_chain->current_texture = nullptr;
 	}
 }
@@ -1827,6 +1860,9 @@ Error RenderingDeviceDriverWebGPU::swap_chain_resize(CommandQueueID p_cmd_queue,
 	configuration.device = device;
 	configuration.format = info->wgpu_format;
 	configuration.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+#ifdef __EMSCRIPTEN__
+	configuration.usage |= WGPUTextureUsage_CopyDst;
+#endif
 	configuration.width = width;
 	configuration.height = height;
 	configuration.alphaMode = WGPUCompositeAlphaMode_Auto;
@@ -1847,8 +1883,21 @@ RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGPU::swap_chain_acq
 		return FramebufferID();
 	}
 
+	TextureInfo *texture = nullptr;
+#ifdef __EMSCRIPTEN__
+	if (info->current_framebuffer) {
+		return FramebufferID(info->current_framebuffer);
+	}
+	TextureFormat format;
+	format.format = info->format;
+	format.width = info->width;
+	format.height = info->height;
+	format.usage_bits = TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | TEXTURE_USAGE_CAN_COPY_FROM_BIT;
+	texture = (TextureInfo *)texture_create(format, TextureView()).id;
+	ERR_FAIL_NULL_V(texture, FramebufferID());
+	wgpuTextureSetLabel(texture->texture, _sv("Godot persistent browser frame"));
+#else
 	_release_swap_chain_image(info);
-
 	WGPUSurfaceTexture surface_texture = {};
 	wgpuSurfaceGetCurrentTexture(info->surface, &surface_texture);
 	switch (surface_texture.status) {
@@ -1866,7 +1915,7 @@ RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGPU::swap_chain_acq
 			return FramebufferID();
 	}
 
-	TextureInfo *texture = memnew(TextureInfo);
+	texture = memnew(TextureInfo);
 	texture->texture = surface_texture.texture;
 	texture->view = wgpuTextureCreateView(surface_texture.texture, nullptr);
 	texture->format = info->format;
@@ -1877,6 +1926,7 @@ RenderingDeviceDriver::FramebufferID RenderingDeviceDriverWebGPU::swap_chain_acq
 	texture->usage_bits = TEXTURE_USAGE_COLOR_ATTACHMENT_BIT;
 	texture->view_dimension = WGPUTextureViewDimension_2D;
 	texture->owns_texture = false;
+#endif
 	info->current_texture = texture;
 
 	FramebufferInfo *framebuffer = memnew(FramebufferInfo);
@@ -2034,7 +2084,7 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 			spirv.code = words.ptr();
 			module_desc.nextInChain = &spirv.chain;
 #else
-			ERR_PRINT("WebGPU driver: browsers need WGSL shaders; bake the container with GODOT_TINT_PATH set.");
+			ERR_PRINT(vformat("WebGPU driver: shader '%s' has no baked WGSL; bake the container with GODOT_TINT_PATH set.", info->name));
 			failed = true;
 			break;
 #endif
@@ -2131,7 +2181,9 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 			if (set == 0 && info->emulate_push_constants) {
 				entries.push_back(_push_constant_layout_entry());
 			}
+			const CharString layout_label = vformat("%s set %d", info->name, set).utf8();
 			WGPUBindGroupLayoutDescriptor layout_desc = {};
+			layout_desc.label = _sv(layout_label.get_data());
 			layout_desc.entryCount = entries.size();
 			layout_desc.entries = entries.ptr();
 			WGPUBindGroupLayout layout = wgpuDeviceCreateBindGroupLayout(device, &layout_desc);
@@ -2163,6 +2215,7 @@ RenderingDeviceDriver::ShaderID RenderingDeviceDriverWebGPU::shader_create_from_
 
 	if (!failed) {
 		WGPUPipelineLayoutDescriptor pipeline_layout_desc = {};
+		pipeline_layout_desc.label = _sv(name.get_data());
 		pipeline_layout_desc.bindGroupLayoutCount = info->set_layouts.size();
 		pipeline_layout_desc.bindGroupLayouts = info->set_layouts.ptr();
 		pipeline_layout_desc.immediateSize = (immediates_supported && !info->emulate_push_constants) ? info->push_constant_size : 0;

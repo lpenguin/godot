@@ -177,7 +177,8 @@ public:
 		bool configured = false;
 		uint32_t width = 0;
 		uint32_t height = 0;
-		// The image acquired for the frame that is being recorded, presented by command_queue_execute_and_present().
+		// Native: the acquired surface image. Browser: an owned render target that survives JSPI waits;
+		// command_queue_execute_and_present() copies it to a freshly acquired canvas image before yielding.
 		TextureInfo *current_texture = nullptr;
 		FramebufferInfo *current_framebuffer = nullptr;
 	};

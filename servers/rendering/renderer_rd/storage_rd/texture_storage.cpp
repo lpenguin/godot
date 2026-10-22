@@ -186,7 +186,11 @@ TextureStorage::TextureStorage() {
 		}
 
 		memset(pv.ptrw(), 0, 16 * 4);
-		default_rd_textures[DEFAULT_RD_TEXTURE_MULTIMESH_BUFFER] = RD::get_singleton()->texture_buffer_create(16, RD::DATA_FORMAT_R8G8B8A8_UNORM, pv);
+		if (RD::get_singleton()->get_device_capabilities().device_family != RenderingDeviceDriver::DEVICE_WEBGPU) {
+			// WebGPU has no texel buffers. MultiMesh uses storage buffers in this backend;
+			// do not attempt to allocate the unused texel-buffer fallback.
+			default_rd_textures[DEFAULT_RD_TEXTURE_MULTIMESH_BUFFER] = RD::get_singleton()->texture_buffer_create(16, RD::DATA_FORMAT_R8G8B8A8_UNORM, pv);
+		}
 
 		// Can be skipped, is still 0 from the previous call.
 		//memset(pv.ptrw(), 0, 16 * 4);

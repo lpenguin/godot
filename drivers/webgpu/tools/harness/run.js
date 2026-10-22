@@ -52,7 +52,7 @@ const server = http.createServer((req, res) => {
 		}
 	};
 	page.on('console', (msg) => {
-		const text = msg.text();
+		const text = msg.text().replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
 		console.log(text);
 		const m = text.match(/\[doctest\] Status: (\w+)/);
 		if (m) {

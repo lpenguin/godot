@@ -38,6 +38,38 @@ TEST_FORCE_LINK(test_webgpu_screen)
 #include "drivers/webgpu/rendering_context_driver_webgpu.h"
 #include "servers/rendering/rendering_device.h"
 
+#include <emscripten.h>
+
+// clang-format off
+EM_JS(void, webgpu_screen_capture_validation, (), {
+	globalThis.webgpuScreenValidation = { devices: [], errors: [], requestDevice: GPUAdapter.prototype.requestDevice };
+	GPUAdapter.prototype.requestDevice = function(...args) {
+		return globalThis.webgpuScreenValidation.requestDevice.apply(this, args).then(device => {
+			globalThis.webgpuScreenValidation.devices.push(device);
+			device.addEventListener('uncapturederror', event => {
+				globalThis.webgpuScreenValidation.errors.push(event.error.message);
+			});
+			return device;
+		});
+	};
+});
+
+EM_ASYNC_JS(void, webgpu_screen_expire_canvas, (), {
+	await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+});
+
+EM_ASYNC_JS(int, webgpu_screen_finish_validation, (), {
+	const capture = globalThis.webgpuScreenValidation;
+	GPUAdapter.prototype.requestDevice = capture.requestDevice;
+	await Promise.all(capture.devices.map(device => device.queue.onSubmittedWorkDone()));
+	await new Promise(resolve => setTimeout(resolve, 50));
+	for (const error of capture.errors) {
+		console.error('SCREEN VALIDATION: ' + error);
+	}
+	return capture.errors.length;
+});
+// clang-format on
+
 // Draws the baked triangle shader to the page's <canvas id="canvas"> through RenderingDevice's screen path
 // (surface, swap chain, screen draw list, swap_buffers). The page keeps showing the last frame.
 namespace TestWebGPUScreen {
@@ -56,6 +88,7 @@ const float TRIANGLE[3][5] = {
 TEST_CASE("[WebGPU][Browser][Screen] The triangle is presented to the canvas") {
 	const Vector<uint8_t> container = FileAccess::get_file_as_bytes("/webgpu/triangle.bin");
 	REQUIRE_MESSAGE(!container.is_empty(), "Cannot read /webgpu/triangle.bin");
+	webgpu_screen_capture_validation();
 
 	// The context, device and swap chain are intentionally leaked so that the canvas keeps showing the last frame.
 	RenderingContextDriverWebGPU *context = memnew(RenderingContextDriverWebGPU);
@@ -102,13 +135,22 @@ TEST_CASE("[WebGPU][Browser][Screen] The triangle is presented to the canvas") {
 	const Color clear_color(0.1f, 0.2f, 0.3f, 1.0f);
 	for (int frame = 0; frame < 3; frame++) {
 		REQUIRE(rd->screen_prepare_for_drawing(DisplayServerEnums::MAIN_WINDOW_ID) == OK);
+		if (frame == 1) {
+			// The browser expires an acquired canvas image while Godot's async stack is suspended.
+			webgpu_screen_expire_canvas();
+		}
 		RD::DrawListID list = rd->draw_list_begin_for_screen(DisplayServerEnums::MAIN_WINDOW_ID, clear_color);
 		rd->draw_list_bind_render_pipeline(list, pipeline);
 		rd->draw_list_bind_vertex_array(list, vertex_array);
 		rd->draw_list_draw(list, false, 1);
 		rd->draw_list_end();
+		if (frame == 2) {
+			// Also exercise a suspension after commands were recorded, before their final submission.
+			webgpu_screen_expire_canvas();
+		}
 		rd->swap_buffers(true);
 	}
+	CHECK(webgpu_screen_finish_validation() == 0);
 	print_line(vformat("SCREEN: presented 3 frames to a %dx%d canvas", rd->screen_get_width(DisplayServerEnums::MAIN_WINDOW_ID), rd->screen_get_height(DisplayServerEnums::MAIN_WINDOW_ID)));
 
 	rd->free_rid(pipeline);

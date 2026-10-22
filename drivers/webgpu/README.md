@@ -381,3 +381,64 @@ regression requires `GODOT_TINT_PATH`. It checks read/write reflection, WGSL bin
 slots and actual GPU results. It fails before the fix, and both WoodWorks brick
 classifiers also execute with the corrected container. Unsupported unused built-in
 shader diagnostics in a full native WebGPU renderer remain separate.
+
+
+## Canvas lifetime across asynchronous waits
+
+Browser swap-chain images returned by `getCurrentTexture()` expire when control
+returns to the browser. Keeping their C handles alive does not extend that
+lifetime. The JSPI frame stack can suspend while waiting for pipelines, transfers
+or fences; recording a canvas attachment before such a suspension and submitting
+it afterward causes Chrome's `Destroyed texture ... used in a submit` validation
+error. Resize is not required to trigger it.
+
+The browser driver renders into one owned texture at the configured surface size.
+It acquires the actual canvas image only while building the final texture copy,
+then submits that copy after the frame commands in the same synchronous call.
+No asynchronous operation occurs between acquisition and submission. Resize and
+surface destruction release the owned image through normal texture bookkeeping.
+Native surface acquisition/presentation is retained. The cost is one color image
+(31.64 MiB at 3840x2160 BGRA8) and one GPU texture copy per presentation; there is
+no CPU image readback or extra queue-completion wait.
+
+The local `[WebGPU][Browser][Screen]` regression deliberately yields through two
+animation frames after preparing the screen, and again after recording the draw
+commands, before submission. It captures validation errors and drains completion
+before asserting zero. The v24 driver fails with two destroyed-canvas errors;
+the owned-target implementation passes all 12 assertions. The browser harness
+strips ANSI escape sequences before recognizing doctest status; otherwise colored
+status lines do not match and the harness cannot finish normally. These browser
+tests remain local, outside the release-build CI.
+
+Missing-WGSL diagnostics now identify the shader; bind-group and pipeline layouts
+also carry the shader label. These labels improve diagnosis and do not implement
+unsupported built-in effects. WGSL unreachable-code warnings and LA8-to-RGBA8
+conversion warnings are separate from a rejected pipeline or expired canvas.
+
+The device requests `texture-formats-tier1` and `texture-formats-tier2` when the
+adapter advertises them. Tier 2 permits read-write storage access to formats such
+as `rgba8unorm` and `rgba16float`; adapter support alone is insufficient unless the
+feature is also enabled on the device. Neither feature is required on adapters
+that lack it. Firefox without tier 2 still cannot execute SSIL's read-write edge
+image or compute Bokeh DOF's in-place color updates; those effects are not used by
+the WoodWorks workshop. Enabling tier 2 does not solve unsupported GI shaders.
+
+The renderer reports dynamic GI and volumetric fog as unsupported on WebGPU and
+skips their shader initialization/execution. VoxelGI/SDFGI remain unported (see
+the scope above); previously their eager initialization generated missing-WGSL,
+texel-buffer and vertex-writable-storage errors even in scenes not using them.
+The fallback GI uniform buffers remain allocated for Forward Clustered's scene
+bindings. Baked lightmaps, SSR and ordinary fog retain their existing paths.
+The unused MultiMesh texel-buffer fallback is also skipped on WebGPU, which
+uses storage buffers and cannot create a texel buffer.
+
+FSR 1 selects its existing float32 fallback on WebGPU. Its half-precision variant
+also requires 16-bit integers, which cannot be represented in WGSL even when
+`shader-f16` is available. The unsupported variant is disabled before shader
+compilation, and processing uses the same selected variant as pipeline creation.
+This does not change the viewport size or the scene's rendering scale.
+For an LDR viewport, WebGPU's strict storage format matching also requires an
+RGBA16F FSR result followed by a raster copy to the final target. This extra
+image/copy is used only while FSR is active. A local 0.5-scale FSR probe failed
+with an RGBA16F/RGBA8 binding mismatch before this conversion and renders the
+expected green box afterward.
