@@ -386,13 +386,7 @@ Outputs run_scenario(RD *p_rd, const String &p_shaders, const String &p_baked_di
 		RID target_pages = r.storage(pages_bytes);
 		RID page_image = r.texture(RDC::DATA_FORMAT_R8G8B8A8_UNORM, RDC::TEXTURE_TYPE_2D, COARSE.x, COARSE.y * COARSE.z, 1, page_image_zero);
 		RID carve_params_buffer = r.uniform_buffer(p.bytes);
-		// Current project shaders also track removal of a finish coating. The
-		// zero axis disables coating tracking in this geometry-only scenario.
-		Vector<uint8_t> finish_bytes;
-		finish_bytes.resize(16 + 1024 * sizeof(float) + 1536 * sizeof(uint32_t));
-		finish_bytes.fill(0);
-		RID finish_buffer = r.storage(finish_bytes);
-		RID carve_set = r.set(carve_shader, { { RDC::UNIFORM_TYPE_UNIFORM_BUFFER, carve_params_buffer }, { RDC::UNIFORM_TYPE_STORAGE_BUFFER, live_pages }, { RDC::UNIFORM_TYPE_IMAGE, live_atlas }, { RDC::UNIFORM_TYPE_IMAGE, page_image }, { RDC::UNIFORM_TYPE_STORAGE_BUFFER, target_pages }, { RDC::UNIFORM_TYPE_IMAGE, target_atlas }, { RDC::UNIFORM_TYPE_UNIFORM_BUFFER, target_params_buffer }, { RDC::UNIFORM_TYPE_STORAGE_BUFFER, finish_buffer } });
+		RID carve_set = r.set(carve_shader, { { RDC::UNIFORM_TYPE_UNIFORM_BUFFER, carve_params_buffer }, { RDC::UNIFORM_TYPE_STORAGE_BUFFER, live_pages }, { RDC::UNIFORM_TYPE_IMAGE, live_atlas }, { RDC::UNIFORM_TYPE_IMAGE, page_image }, { RDC::UNIFORM_TYPE_STORAGE_BUFFER, target_pages }, { RDC::UNIFORM_TYPE_IMAGE, target_atlas }, { RDC::UNIFORM_TYPE_UNIFORM_BUFFER, target_params_buffer } });
 		r.dispatch(carve_pipeline, carve_set, COARSE);
 		if (variant == 0) {
 			out.carve_atlas = r.tex_data(live_atlas);
