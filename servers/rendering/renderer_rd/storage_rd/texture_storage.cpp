@@ -186,7 +186,11 @@ TextureStorage::TextureStorage() {
 		}
 
 		memset(pv.ptrw(), 0, 16 * 4);
-		default_rd_textures[DEFAULT_RD_TEXTURE_MULTIMESH_BUFFER] = RD::get_singleton()->texture_buffer_create(16, RD::DATA_FORMAT_R8G8B8A8_UNORM, pv);
+		if (RD::get_singleton()->get_device_capabilities().device_family != RenderingDeviceDriver::DEVICE_WEBGPU) {
+			// WebGPU has no texel buffers. MultiMesh uses storage buffers in this backend;
+			// do not attempt to allocate the unused texel-buffer fallback.
+			default_rd_textures[DEFAULT_RD_TEXTURE_MULTIMESH_BUFFER] = RD::get_singleton()->texture_buffer_create(16, RD::DATA_FORMAT_R8G8B8A8_UNORM, pv);
+		}
 
 		// Can be skipped, is still 0 from the previous call.
 		//memset(pv.ptrw(), 0, 16 * 4);
@@ -2270,8 +2274,26 @@ uint64_t TextureStorage::texture_get_native_handle(RID p_texture, bool p_srgb) c
 Ref<Image> TextureStorage::_validate_texture_format(const Ref<Image> &p_image, TextureToRDFormat &r_format) {
 	Image::Format original_format = p_image->get_format();
 	Ref<Image> image = p_image->duplicate();
+	Image::Format switch_format = p_image->get_format();
 
-	switch (p_image->get_format()) {
+#ifdef WEBGPU_ENABLED
+	// WebGPU has no texture swizzles and no packed 16-bit formats: expand them to RGBA8.
+	if (RD::get_singleton()->get_device_capabilities().device_family == RDD::DEVICE_WEBGPU) {
+		switch (switch_format) {
+			case Image::FORMAT_L8:
+			case Image::FORMAT_LA8:
+			case Image::FORMAT_RGBA4444:
+			case Image::FORMAT_RGB565:
+				image->convert(Image::FORMAT_RGBA8);
+				switch_format = Image::FORMAT_RGBA8;
+				break;
+			default:
+				break;
+		}
+	}
+#endif
+
+	switch (switch_format) {
 		case Image::FORMAT_L8: {
 			r_format.format = RD::DATA_FORMAT_R8_UNORM;
 			r_format.swizzle_r = RD::TEXTURE_SWIZZLE_R;

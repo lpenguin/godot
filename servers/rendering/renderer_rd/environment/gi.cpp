@@ -3571,6 +3571,15 @@ GI::~GI() {
 }
 
 void GI::init(SkyRD *p_sky) {
+	if (RD::get_singleton()->get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU) {
+		// Keep the scene shader's fallback bindings valid without initializing
+		// unsupported dynamic GI shaders. Baked lightmaps use a separate path.
+		sdfgi_ubo = RD::get_singleton()->uniform_buffer_create(sizeof(SDFGIData));
+		default_voxel_gi_buffer = RD::get_singleton()->uniform_buffer_create(sizeof(VoxelGIData) * MAX_VOXEL_GI_INSTANCES);
+		half_resolution = GLOBAL_GET("rendering/global_illumination/gi/use_half_resolution");
+		return;
+	}
+
 	RendererRD::TextureStorage *texture_storage = RendererRD::TextureStorage::get_singleton();
 	RendererRD::MaterialStorage *material_storage = RendererRD::MaterialStorage::get_singleton();
 

@@ -35,6 +35,16 @@
 
 using namespace RendererRD;
 
+// The compute resolve shaders fetch from multisampled textures, which WebGPU cannot combine with a sampler.
+static RD::Uniform _multisampled_source_uniform(uint32_t p_binding, RID p_sampler, RID p_texture) {
+#ifdef WEBGPU_ENABLED
+	if (RD::get_singleton()->get_device_capabilities().device_family == RDD::DEVICE_WEBGPU) {
+		return RD::Uniform(RD::UNIFORM_TYPE_TEXTURE, p_binding, p_texture);
+	}
+#endif
+	return RD::Uniform(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, p_binding, Vector<RID>({ p_sampler, p_texture }));
+}
+
 Resolve::Resolve(bool p_prefer_raster_effects) {
 	prefer_raster_effects = p_prefer_raster_effects;
 
@@ -85,8 +95,8 @@ void Resolve::resolve_gi(RID p_source_depth, RID p_source_normal_roughness, RID 
 	// setup our uniforms
 	RID default_sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 
-	RD::Uniform u_source_depth(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ default_sampler, p_source_depth }));
-	RD::Uniform u_source_normal_roughness(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 1, Vector<RID>({ default_sampler, p_source_normal_roughness }));
+	RD::Uniform u_source_depth = _multisampled_source_uniform(0, default_sampler, p_source_depth);
+	RD::Uniform u_source_normal_roughness = _multisampled_source_uniform(1, default_sampler, p_source_normal_roughness);
 	RD::Uniform u_dest_depth(RD::UNIFORM_TYPE_IMAGE, 0, Vector<RID>({ p_dest_depth }));
 	RD::Uniform u_dest_normal_roughness(RD::UNIFORM_TYPE_IMAGE, 1, Vector<RID>({ p_dest_normal_roughness }));
 
@@ -99,7 +109,7 @@ void Resolve::resolve_gi(RID p_source_depth, RID p_source_normal_roughness, RID 
 	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 0, u_source_depth, u_source_normal_roughness), 0);
 	RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 1, u_dest_depth, u_dest_normal_roughness), 1);
 	if (p_source_voxel_gi.is_valid()) {
-		RD::Uniform u_source_voxel_gi(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ default_sampler, p_source_voxel_gi }));
+		RD::Uniform u_source_voxel_gi = _multisampled_source_uniform(0, default_sampler, p_source_voxel_gi);
 		RD::Uniform u_dest_voxel_gi(RD::UNIFORM_TYPE_IMAGE, 0, p_dest_voxel_gi);
 
 		RD::get_singleton()->compute_list_bind_uniform_set(compute_list, uniform_set_cache->get_cache(shader, 2, u_source_voxel_gi), 2);
@@ -129,7 +139,7 @@ void Resolve::resolve_depth(RID p_source_depth, RID p_dest_depth, Vector2i p_scr
 	// setup our uniforms
 	RID default_sampler = material_storage->sampler_rd_get_default(RSE::CANVAS_ITEM_TEXTURE_FILTER_LINEAR, RSE::CANVAS_ITEM_TEXTURE_REPEAT_DISABLED);
 
-	RD::Uniform u_source_depth(RD::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 0, Vector<RID>({ default_sampler, p_source_depth }));
+	RD::Uniform u_source_depth = _multisampled_source_uniform(0, default_sampler, p_source_depth);
 	RD::Uniform u_dest_depth(RD::UNIFORM_TYPE_IMAGE, 0, p_dest_depth);
 
 	ResolveMode mode = RESOLVE_MODE_DEPTH;

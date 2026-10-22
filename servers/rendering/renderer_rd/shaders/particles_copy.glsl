@@ -65,7 +65,18 @@ layout(push_constant, std430) uniform Params {
 	uint motion_vectors_current_offset;
 	uint flags;
 
-	float inv_emission_transform[12];
+	float inv_emission_transform0;
+	float inv_emission_transform1;
+	float inv_emission_transform2;
+	float inv_emission_transform3;
+	float inv_emission_transform4;
+	float inv_emission_transform5;
+	float inv_emission_transform6;
+	float inv_emission_transform7;
+	float inv_emission_transform8;
+	float inv_emission_transform9;
+	float inv_emission_transform10;
+	float inv_emission_transform11;
 
 	uint align_channel_filter;
 	uint align_axis;
@@ -314,17 +325,21 @@ void main() {
 			// In global mode, bring 2D particles to local coordinates
 			// as they will be drawn with the node position as origin.
 			mat4 inv_emission_transform;
-			inv_emission_transform[0] = vec4(params.inv_emission_transform[0], params.inv_emission_transform[1], params.inv_emission_transform[2], 0.0);
-			inv_emission_transform[1] = vec4(params.inv_emission_transform[3], params.inv_emission_transform[4], params.inv_emission_transform[5], 0.0);
-			inv_emission_transform[2] = vec4(params.inv_emission_transform[6], params.inv_emission_transform[7], params.inv_emission_transform[8], 0.0);
-			inv_emission_transform[3] = vec4(params.inv_emission_transform[9], params.inv_emission_transform[10], params.inv_emission_transform[11], 1.0);
+			inv_emission_transform[0] = vec4(params.inv_emission_transform0, params.inv_emission_transform1, params.inv_emission_transform2, 0.0);
+			inv_emission_transform[1] = vec4(params.inv_emission_transform3, params.inv_emission_transform4, params.inv_emission_transform5, 0.0);
+			inv_emission_transform[2] = vec4(params.inv_emission_transform6, params.inv_emission_transform7, params.inv_emission_transform8, 0.0);
+			inv_emission_transform[3] = vec4(params.inv_emission_transform9, params.inv_emission_transform10, params.inv_emission_transform11, 1.0);
 
 			txform = inv_emission_transform * txform;
 		}
 	} else {
 		// Set scale to zero and translate to -INF so particle will be invisible
 		// even for materials that ignore rotation/scale (i.e. billboards).
+#ifdef WEBGPU
+		txform = mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(-3.402823e38, -3.402823e38, -3.402823e38, 0.0)); // WGSL has no infinity.
+#else
 		txform = mat4(vec4(0.0), vec4(0.0), vec4(0.0), vec4(-1.0 / 0.0, -1.0 / 0.0, -1.0 / 0.0, 0.0));
+#endif
 	}
 	txform = transpose(txform);
 

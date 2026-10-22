@@ -162,7 +162,14 @@ dst_particles;
 
 #define MAX_3D_TEXTURES 7
 
+#ifdef WEBGPU
+// WebGPU has no binding arrays: only the first collision / attractor vector field is available.
+layout(set = 2, binding = 0) uniform texture3D sdf_vec_texture0;
+#define SDF_VEC_TEXTURE(m_index) sdf_vec_texture0
+#else
 layout(set = 2, binding = 0) uniform texture3D sdf_vec_textures[MAX_3D_TEXTURES];
+#define SDF_VEC_TEXTURE(m_index) sdf_vec_textures[m_index]
+#endif
 layout(set = 2, binding = 1) uniform texture2D height_field_texture;
 
 /* SET 3: MATERIAL */
@@ -480,7 +487,7 @@ void main() {
 					if (any(lessThan(uvw_pos, vec3(0.0))) || any(greaterThan(uvw_pos, vec3(1.0)))) {
 						continue;
 					}
-					vec3 s = texture(sampler3D(sdf_vec_textures[FRAME.attractors[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos).xyz * -2.0 + 1.0;
+					vec3 s = texture(sampler3D(SDF_VEC_TEXTURE(FRAME.attractors[i].texture_index), SAMPLER_LINEAR_CLAMP), uvw_pos).xyz * -2.0 + 1.0;
 					dir = mat3(FRAME.attractors[i].transform) * safe_normalize(s); //revert direction
 					amount = length(s);
 
@@ -605,7 +612,7 @@ void main() {
 						}
 
 						vec3 uvw_pos = (local_pos / FRAME.colliders[i].extents) * 0.5 + 0.5;
-						float s = texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos).r;
+						float s = texture(sampler3D(SDF_VEC_TEXTURE(FRAME.colliders[i].texture_index), SAMPLER_LINEAR_CLAMP), uvw_pos).r;
 						s *= FRAME.colliders[i].scale;
 						s += extra_dist;
 						if (s <= particle_size + EPSILON) {
@@ -615,9 +622,9 @@ void main() {
 							normal = mat3(FRAME.colliders[i].transform) *
 									normalize(
 											vec3(
-													texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos + vec3(EPSILON, 0.0, 0.0)).r - texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos - vec3(EPSILON, 0.0, 0.0)).r,
-													texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos + vec3(0.0, EPSILON, 0.0)).r - texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos - vec3(0.0, EPSILON, 0.0)).r,
-													texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos + vec3(0.0, 0.0, EPSILON)).r - texture(sampler3D(sdf_vec_textures[FRAME.colliders[i].texture_index], SAMPLER_LINEAR_CLAMP), uvw_pos - vec3(0.0, 0.0, EPSILON)).r));
+													texture(sampler3D(SDF_VEC_TEXTURE(FRAME.colliders[i].texture_index), SAMPLER_LINEAR_CLAMP), uvw_pos + vec3(EPSILON, 0.0, 0.0)).r - texture(sampler3D(SDF_VEC_TEXTURE(FRAME.colliders[i].texture_index), SAMPLER_LINEAR_CLAMP), uvw_pos - vec3(EPSILON, 0.0, 0.0)).r,
+													texture(sampler3D(SDF_VEC_TEXTURE(FRAME.colliders[i].texture_index), SAMPLER_LINEAR_CLAMP), uvw_pos + vec3(0.0, EPSILON, 0.0)).r - texture(sampler3D(SDF_VEC_TEXTURE(FRAME.colliders[i].texture_index), SAMPLER_LINEAR_CLAMP), uvw_pos - vec3(0.0, EPSILON, 0.0)).r,
+													texture(sampler3D(SDF_VEC_TEXTURE(FRAME.colliders[i].texture_index), SAMPLER_LINEAR_CLAMP), uvw_pos + vec3(0.0, 0.0, EPSILON)).r - texture(sampler3D(SDF_VEC_TEXTURE(FRAME.colliders[i].texture_index), SAMPLER_LINEAR_CLAMP), uvw_pos - vec3(0.0, 0.0, EPSILON)).r));
 						}
 
 					} break;

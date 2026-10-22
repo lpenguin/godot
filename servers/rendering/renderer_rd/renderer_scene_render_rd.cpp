@@ -1767,13 +1767,12 @@ bool RendererSceneRenderRD::is_vrs_supported() const {
 }
 
 bool RendererSceneRenderRD::is_dynamic_gi_supported() const {
-	// usable by default (unless low end = true)
-	return true;
+	// The WebGPU port does not yet support the VoxelGI/SDFGI shader families.
+	return RD::get_singleton()->get_device_capabilities().device_family != RenderingDeviceDriver::DEVICE_WEBGPU;
 }
 
 bool RendererSceneRenderRD::is_volumetric_supported() const {
-	// usable by default (unless low end = true)
-	return true;
+	return RD::get_singleton()->get_device_capabilities().device_family != RenderingDeviceDriver::DEVICE_WEBGPU;
 }
 
 uint32_t RendererSceneRenderRD::get_max_elements() const {
@@ -1804,7 +1803,8 @@ void RendererSceneRenderRD::init() {
 
 	/* GI */
 
-	if (is_dynamic_gi_supported()) {
+	// Forward Clustered still binds the fallback GI uniform buffers on WebGPU.
+	if (is_dynamic_gi_supported() || RD::get_singleton()->get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU) {
 		gi.init(&sky);
 	}
 
@@ -1927,7 +1927,7 @@ RendererSceneRenderRD::~RendererSceneRenderRD() {
 		RD::get_singleton()->free_rid(sky.sky_scene_state.uniform_set);
 	}
 
-	if (is_dynamic_gi_supported()) {
+	if (is_dynamic_gi_supported() || RD::get_singleton()->get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU) {
 		gi.free();
 	}
 

@@ -406,6 +406,7 @@ public:
 	FUNC2RC(RID, mesh_surface_get_material, RID, int)
 
 	FUNC2RC(RenderingServerTypes::SurfaceData, mesh_get_surface, RID, int)
+	FUNC3(mesh_surface_get_arrays_async, RID, int, const Callable &)
 
 	FUNC1RC(int, mesh_get_surface_count, RID)
 
@@ -967,6 +968,7 @@ public:
 
 	FUNC6(instance_geometry_set_visibility_range, RID, float, float, float, float, RSE::VisibilityRangeFadeMode)
 	FUNC4(instance_geometry_set_lightmap, RID, RID, const Rect2 &, int)
+	FUNC0(prepare_scene_pipelines)
 	FUNC2(instance_geometry_set_lod_bias, RID, float)
 	FUNC2(instance_geometry_set_transparency, RID, float)
 	FUNC3(instance_geometry_set_shader_parameter, RID, const StringName &, const Variant &)

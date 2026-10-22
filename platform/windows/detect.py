@@ -505,6 +505,13 @@ def configure_msvc(env: "SConsEnvironment"):
         if not env["use_volk"]:
             LIBS += ["vulkan"]
 
+    if env["webgpu"]:
+        env.AppendUnique(CPPDEFINES=["WEBGPU_ENABLED", "RD_ENABLED"])
+        wgpu_dir = os.path.abspath(env["wgpu_native_path"])
+        env.Append(CPPPATH=[wgpu_dir + "/include"])
+        env.Append(LIBPATH=[wgpu_dir + "/lib"])
+        LIBS += ["wgpu_native.dll"]
+
     if env["sdl"]:
         env.Append(CPPDEFINES=["SDL_ENABLED"])
 
@@ -936,6 +943,10 @@ def configure_mingw(env: "SConsEnvironment"):
         env.Append(CPPDEFINES=["VULKAN_ENABLED", "RD_ENABLED"])
         if not env["use_volk"]:
             env.Append(LIBS=["vulkan"])
+
+    if env["webgpu"]:
+        print_error("The WebGPU driver is currently only supported with MSVC on Windows.")
+        sys.exit(255)
 
     if env["sdl"]:
         env.Append(CPPDEFINES=["SDL_ENABLED"])

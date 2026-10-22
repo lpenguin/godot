@@ -197,10 +197,16 @@ public:
 	virtual void buffer_free(BufferID p_buffer) = 0;
 	virtual uint64_t buffer_get_allocation_size(BufferID p_buffer) = 0;
 	virtual uint8_t *buffer_map(BufferID p_buffer) = 0;
+	// Independent readbacks. Polling must not wait unless explicitly requested (sync/finalize).
+	virtual Error buffer_map_async(BufferID p_buffer) { return ERR_UNAVAILABLE; }
+	virtual Error buffer_map_async_poll(BufferID p_buffer, bool p_wait = false) { return ERR_UNAVAILABLE; }
 	virtual void buffer_unmap(BufferID p_buffer) = 0;
 	virtual uint8_t *buffer_persistent_map_advance(BufferID p_buffer, uint64_t p_frames_drawn) = 0;
 	virtual uint64_t buffer_get_dynamic_offsets(Span<BufferID> p_buffers) = 0;
 	virtual void buffer_flush(BufferID p_buffer) {}
+	// Backends with mapped GPU memory can keep flushing the whole allocation. Upload-based backends
+	// can avoid copying unused capacity when the caller knows which bytes it wrote.
+	virtual void buffer_flush_range(BufferID p_buffer, uint64_t p_offset, uint64_t p_size) { buffer_flush(p_buffer); }
 	// Only for a buffer with BUFFER_USAGE_DEVICE_ADDRESS_BIT.
 	virtual uint64_t buffer_get_device_address(BufferID p_buffer) = 0;
 
@@ -904,6 +910,16 @@ public:
 		API_TRAIT_USE_GENERAL_IN_COPY_QUEUES,
 		API_TRAIT_BUFFERS_REQUIRE_TRANSITIONS,
 		API_TRAIT_TEXTURE_OUTPUTS_REQUIRE_CLEARS,
+		// buffer_map() waits for the submitted copy itself. Mid-frame command buffers can be
+		// submitted and recording restarted without resetting/recycling any per-frame resources.
+		API_TRAIT_BUFFER_READBACK_WITHOUT_FRAME_STALL,
+		API_TRAIT_INDEPENDENT_BUFFER_READBACK,
+		// Queue writes copy host data and are ordered with submissions. Submitted commands retain
+		// GPU objects, so recycling CPU frame bookkeeping does not require a GPU completion fence.
+		API_TRAIT_FRAME_RESOURCES_RELEASE_ON_SUBMIT,
+		// Uploads share the draw queue, queue writes snapshot CPU data, and submitted commands
+		// retain their resources. Transfer worker recording/staging can restart after submission.
+		API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT,
 		API_TRAIT_ACCELERATION_STRUCTURE_INSTANCE_SIZE,
 		API_TRAIT_SHADER_GROUP_HANDLE_SIZE,
 		API_TRAIT_SHADER_GROUP_BASE_ALIGNMENT,
@@ -924,6 +940,7 @@ public:
 		DEVICE_VULKAN,
 		DEVICE_DIRECTX,
 		DEVICE_METAL,
+		DEVICE_WEBGPU,
 	};
 
 	struct Capabilities {

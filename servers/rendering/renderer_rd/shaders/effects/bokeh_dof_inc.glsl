@@ -25,7 +25,8 @@ layout(push_constant, std430) uniform Params {
 
 	float blur_size_near;
 	float blur_size_far;
-	uint pad[2];
+	uint pad0;
+	uint pad1;
 }
 params;
 

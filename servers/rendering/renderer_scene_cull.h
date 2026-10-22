@@ -1072,6 +1072,7 @@ public:
 
 	virtual void mesh_generate_pipelines(RID p_mesh, bool p_background_compilation);
 	virtual uint32_t get_pipeline_compilations(RSE::PipelineSource p_source);
+	virtual void prepare_scene_pipelines() override;
 
 	_FORCE_INLINE_ void _update_instance(Instance *p_instance) const;
 	_FORCE_INLINE_ void _update_instance_aabb(Instance *p_instance) const;

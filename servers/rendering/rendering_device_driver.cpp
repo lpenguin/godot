@@ -55,6 +55,11 @@ uint64_t RenderingDeviceDriver::api_trait_get(ApiTrait p_trait) {
 			return false;
 		case API_TRAIT_TEXTURE_OUTPUTS_REQUIRE_CLEARS:
 			return false;
+		case API_TRAIT_BUFFER_READBACK_WITHOUT_FRAME_STALL:
+		case API_TRAIT_INDEPENDENT_BUFFER_READBACK:
+		case API_TRAIT_FRAME_RESOURCES_RELEASE_ON_SUBMIT:
+		case API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT:
+			return false;
 		default:
 			ERR_FAIL_V(0);
 	}

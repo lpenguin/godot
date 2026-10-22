@@ -117,6 +117,11 @@ void main() {
 
 	uint aux = 0;
 
+#ifdef WEBGPU
+	// No subgroup merging and no helper invocation check in WGSL: every invocation sets its bits with an atomic.
+	aux = atomicOr(cluster_render.data[usage_write_offset], usage_write_bit);
+	uint cluster_thread_group_index = 0;
+#else
 	uint cluster_thread_group_index;
 	if (!sc_use_helper_check || !gl_HelperInvocation) {
 		//https://advances.realtimerendering.com/s2017/2017_Sig_Improved_Culling_final.pdf
@@ -142,6 +147,7 @@ void main() {
 			aux = atomicOr(cluster_render.data[usage_write_offset], usage_write_bit);
 		}
 	}
+#endif
 
 	//find the current element in the depth usage list and mark the current depth as used
 	float unit_depth = depth_interp * state.inv_z_far;
@@ -151,12 +157,16 @@ void main() {
 	uint z_write_offset = cluster_offset + state.cluster_depth_offset + element_index;
 	uint z_write_bit = 1 << z_bit;
 
+#ifdef WEBGPU
+	aux = atomicOr(cluster_render.data[z_write_offset], z_write_bit);
+#else
 	if (!sc_use_helper_check || !gl_HelperInvocation) {
 		z_write_bit = subgroupOr(z_write_bit); //merge all Zs
 		if (cluster_thread_group_index == 0) {
 			aux = atomicOr(cluster_render.data[z_write_offset], z_write_bit);
 		}
 	}
+#endif
 
 #ifdef USE_ATTACHMENT
 	frag_color = vec4(float(aux));

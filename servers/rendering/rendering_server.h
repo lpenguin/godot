@@ -227,6 +227,7 @@ public:
 	virtual RID mesh_surface_get_material(RID p_mesh, int p_surface) const = 0;
 
 	virtual RenderingServerTypes::SurfaceData mesh_get_surface(RID p_mesh, int p_surface) const = 0;
+	virtual void mesh_surface_get_arrays_async(RID p_mesh, int p_surface, const Callable &p_callback) = 0;
 
 	virtual int mesh_get_surface_count(RID p_mesh) const = 0;
 
@@ -974,6 +975,7 @@ public:
 	/* STATUS INFORMATION */
 
 	virtual uint64_t get_rendering_info(RSE::RenderingInfo p_info) = 0;
+	virtual void prepare_scene_pipelines() = 0;
 	virtual String get_video_adapter_name() const = 0;
 	virtual String get_video_adapter_vendor() const = 0;
 	virtual RenderingDeviceEnums::DeviceType get_video_adapter_type() const = 0;

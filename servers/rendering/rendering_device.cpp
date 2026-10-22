@@ -33,6 +33,7 @@
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"
+#include "core/crypto/hashing_context.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
 #include "core/object/class_db.h"
@@ -44,6 +45,11 @@
 #include "servers/rendering/shader_include_db.h"
 
 #include "modules/modules_enabled.gen.h"
+
+#ifdef WEBGPU_ENABLED
+#include "core/object/script_language.h"
+#include "drivers/webgpu/webgpu_compilation_trace.h"
+#endif
 
 #ifdef MODULE_GLSLANG_ENABLED
 #include "modules/glslang/shader_compile.h"
@@ -1092,7 +1098,7 @@ Error RenderingDevice::_buffer_update(Buffer *p_buffer, RID p_buffer_id, uint32_
 
 		memcpy(dst_data + p_offset, p_data, p_size);
 		direct_copy_count++;
-		buffer_flush(p_buffer_id);
+		buffer_flush(p_buffer_id, p_offset, p_size);
 		return OK;
 	}
 
@@ -1312,8 +1318,23 @@ Vector<uint8_t> RenderingDevice::buffer_get_data(RID p_buffer, uint32_t p_offset
 
 	draw_graph.add_buffer_get_data(buffer->driver_id, buffer->draw_tracker, tmp_buffer, region);
 
-	// Flush everything so memory can be safely mapped.
-	_flush_and_stall_for_all_frames();
+	if (driver->api_trait_get(RDD::API_TRAIT_BUFFER_READBACK_WITHOUT_FRAME_STALL)) {
+		// Submit the copy before mapping, but keep this frame's resources alive. WebGPU's
+		// buffer_map waits for this staging buffer through mapAsync; a queue-wide fence
+		// would add an unrelated wait (up to 100 ms per buffer in Firefox).
+		_end_frame();
+		execute_chained_cmds(false, {}, {});
+
+		// Resume recording in the same frame. In particular, do not call _begin_frame:
+		// its resource recycling and staging-buffer advancement require a completed frame.
+		// The normal end-of-frame submission still creates the fence protecting all work.
+		driver->begin_segment(frame, frames_drawn++);
+		driver->command_buffer_begin(frames[frame].command_buffer);
+		draw_graph.begin();
+	} else {
+		// Other drivers still need an explicit completion wait before CPU access.
+		_flush_and_stall_for_all_frames();
+	}
 
 	uint8_t *buffer_mem = driver->buffer_map(tmp_buffer);
 	ERR_FAIL_NULL_V(buffer_mem, Vector<uint8_t>());
@@ -1348,6 +1369,30 @@ Error RenderingDevice::buffer_get_data_async(RID p_buffer, const Callable &p_cal
 	ERR_FAIL_COND_V_MSG(!p_callback.is_valid(), ERR_INVALID_PARAMETER, "Callback must be valid.");
 
 	_check_transfer_worker_buffer(buffer);
+	if (driver->api_trait_get(RDD::API_TRAIT_INDEPENDENT_BUFFER_READBACK)) {
+		// Own each staging allocation until its mapping finishes, independently of frame reuse.
+		// Backpressure bounds host/GPU memory when callers enqueue faster than callbacks arrive.
+		ERR_FAIL_COND_V_MSG(independent_buffer_readbacks.size() >= 256 ||
+						independent_buffer_readback_bytes + p_size > 64 * 1024 * 1024,
+				ERR_BUSY, "Too many asynchronous buffer readbacks are pending.");
+		RDD::BufferID staging = driver->buffer_create(p_size, RDD::BUFFER_USAGE_TRANSFER_TO_BIT, RDD::MEMORY_ALLOCATION_TYPE_CPU, frames_drawn);
+		ERR_FAIL_COND_V(!staging, ERR_OUT_OF_MEMORY);
+		if (_buffer_make_mutable(buffer, p_buffer)) {
+			draw_graph.add_synchronization();
+		}
+		RDD::BufferCopyRegion region;
+		region.src_offset = p_offset;
+		region.dst_offset = 0;
+		region.size = p_size;
+		draw_graph.add_buffer_get_data(buffer->driver_id, buffer->draw_tracker, staging, region);
+		IndependentBufferReadback request;
+		request.staging_buffer = staging;
+		request.callback = p_callback;
+		request.size = p_size;
+		independent_buffer_readbacks.push_back(request);
+		independent_buffer_readback_bytes += p_size;
+		return OK;
+	}
 
 	BufferGetDataRequest get_data_request;
 	get_data_request.callback = p_callback;
@@ -1418,6 +1463,46 @@ Error RenderingDevice::buffer_get_data_async(RID p_buffer, const Callable &p_cal
 	return OK;
 }
 
+void RenderingDevice::_start_independent_buffer_readbacks() {
+	for (IndependentBufferReadback &request : independent_buffer_readbacks) {
+		if (!request.submitted) {
+			// execute_chained_cmds has submitted the graph copy before mapAsync is registered.
+			request.submitted = true;
+			driver->buffer_map_async(request.staging_buffer);
+		}
+	}
+}
+
+void RenderingDevice::_process_independent_buffer_readbacks(bool p_wait) {
+	for (uint32_t i = 0; i < independent_buffer_readbacks.size();) {
+		const IndependentBufferReadback &request = independent_buffer_readbacks[i];
+		if (!request.submitted) {
+			i++;
+			continue;
+		}
+		Error result = driver->buffer_map_async_poll(request.staging_buffer, p_wait);
+		if (result == ERR_BUSY) {
+			i++;
+			continue;
+		}
+		PackedByteArray data;
+		if (result == OK) {
+			const uint8_t *mapped = driver->buffer_map(request.staging_buffer);
+			if (mapped) {
+				data.resize(request.size);
+				memcpy(data.ptrw(), mapped, request.size);
+				driver->buffer_unmap(request.staging_buffer);
+			}
+		}
+		Callable callback = request.callback;
+		independent_buffer_readback_bytes -= request.size;
+		driver->buffer_free(request.staging_buffer);
+		// Remove before delivery: a callback can enqueue another readback and reallocate this list.
+		independent_buffer_readbacks.remove_at(i);
+		callback.call(data);
+	}
+}
+
 uint64_t RenderingDevice::buffer_get_device_address(RID p_buffer) {
 	ERR_RENDER_THREAD_GUARD_V(0);
 
@@ -1437,12 +1522,23 @@ uint8_t *RenderingDevice::buffer_persistent_map_advance(RID p_buffer) {
 	return driver->buffer_persistent_map_advance(buffer->driver_id, frames_drawn);
 }
 
-void RenderingDevice::buffer_flush(RID p_buffer) {
+void RenderingDevice::buffer_flush(RID p_buffer, uint32_t p_offset, uint32_t p_size) {
 	ERR_RENDER_THREAD_GUARD();
 
 	Buffer *buffer = _get_buffer_from_owner(p_buffer);
 	ERR_FAIL_NULL_MSG(buffer, "Buffer argument is not a valid buffer of any type.");
-	driver->buffer_flush(buffer->driver_id);
+	if (p_offset == 0 && p_size == 0) {
+		driver->buffer_flush(buffer->driver_id);
+		return;
+	}
+	ERR_FAIL_COND(p_offset > buffer->size);
+	ERR_FAIL_COND(p_size > buffer->size - p_offset);
+	if (p_size == 0) {
+		p_size = buffer->size - p_offset;
+	}
+	if (p_size > 0) {
+		driver->buffer_flush_range(buffer->driver_id, p_offset, p_size);
+	}
 }
 
 RID RenderingDevice::storage_buffer_create(uint32_t p_size_bytes, Span<uint8_t> p_data, BitField<StorageBufferUsage> p_usage, BitField<BufferCreationBits> p_creation_bits) {
@@ -2241,7 +2337,9 @@ Error RenderingDevice::_texture_initialize(RID p_texture, uint32_t p_layer, cons
 			if (p_immediate_flush) {
 				_end_transfer_worker(transfer_worker);
 				_submit_transfer_worker(transfer_worker);
-				_wait_for_transfer_worker(transfer_worker);
+				if (transfer_worker->submitted) {
+					_wait_for_transfer_worker(transfer_worker);
+				}
 			}
 
 			_release_transfer_worker(transfer_worker);
@@ -4149,8 +4247,64 @@ String RenderingDevice::_shader_uniform_debug(RID p_shader, int p_set) {
 	return ret;
 }
 
+// Debug aid: when GODOT_DUMP_SPIRV_DIR is set, every SPIR-V module that reaches the driver is written there as
+// <name>__<hash>.<stage>.spv, so that it can be run through other compilers (for example Tint) offline.
+static void _dump_spirv_modules(const Vector<RenderingDevice::ShaderStageSPIRVData> &p_spirv, const String &p_shader_name) {
+	static const String dump_dir = OS::get_singleton()->get_environment("GODOT_DUMP_SPIRV_DIR");
+	if (dump_dir.is_empty()) {
+		return;
+	}
+	static const char *stage_suffix[] = { "vert", "frag", "tesc", "tese", "comp" }; // codespell:ignore tese
+	String safe_name;
+	for (int i = 0; i < p_shader_name.length(); i++) {
+		const char32_t c = p_shader_name[i];
+		safe_name += (is_ascii_alphanumeric_char(c) || c == '_' || c == '-') ? String::chr(c) : String("_");
+	}
+	uint32_t name_hash = hash_murmur3_buffer(p_shader_name.utf8().get_data(), p_shader_name.utf8().length());
+	for (const RenderingDevice::ShaderStageSPIRVData &stage : p_spirv) {
+		const uint32_t content_hash = hash_murmur3_buffer(stage.spirv.ptr(), stage.spirv.size(), name_hash);
+		const String path = dump_dir.path_join(vformat("%s__%08x.%s.spv", safe_name, content_hash, stage_suffix[stage.shader_stage]));
+		Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+		if (file.is_valid()) {
+			file->store_buffer(stage.spirv.ptr(), stage.spirv.size());
+		}
+	}
+}
+
 Vector<uint8_t> RenderingDevice::shader_compile_binary_from_spirv(const Vector<ShaderStageSPIRVData> &p_spirv, const String &p_shader_name) {
+	_dump_spirv_modules(p_spirv, p_shader_name);
 	const RenderingShaderContainerFormat &container_format = driver->get_shader_container_format();
+
+	// Browsers cannot convert SPIR-V to WGSL (that takes Tint), so the converted shaders are looked up by the hash of
+	// their SPIR-V in files that a native run wrote (user://webgpu_shaders) and that ship with the game
+	// (res://.godot/webgpu_shaders).
+	String webgpu_cache_name;
+	if (driver->get_capabilities().device_family == RDD::DEVICE_WEBGPU) {
+		Ref<HashingContext> hashing = memnew(HashingContext);
+		hashing->start(HashingContext::HASH_SHA256);
+		if (!p_shader_name.is_empty()) {
+			hashing->update(p_shader_name.to_utf8_buffer());
+		}
+		for (const ShaderStageSPIRVData &stage : p_spirv) {
+			PackedByteArray stage_id;
+			stage_id.push_back((uint8_t)stage.shader_stage);
+			hashing->update(stage_id);
+			if (!stage.spirv.is_empty()) {
+				hashing->update(stage.spirv);
+			}
+		}
+		const PackedByteArray digest = hashing->finish();
+		webgpu_cache_name = String::hex_encode_buffer(digest.ptr(), digest.size()) + ".bin";
+		for (const String dir : { "user://webgpu_shaders/", "res://.godot/webgpu_shaders/" }) {
+			if (FileAccess::exists(dir + webgpu_cache_name)) {
+				const Vector<uint8_t> cached = FileAccess::get_file_as_bytes(dir + webgpu_cache_name);
+				if (!cached.is_empty()) {
+					return cached;
+				}
+			}
+		}
+	}
+
 	Ref<RenderingShaderContainer> shader_container = container_format.create_container();
 	ERR_FAIL_COND_V(shader_container.is_null(), Vector<uint8_t>());
 
@@ -4158,7 +4312,17 @@ Vector<uint8_t> RenderingDevice::shader_compile_binary_from_spirv(const Vector<S
 	bool code_compiled = shader_container->set_code_from_spirv(p_shader_name, p_spirv);
 	ERR_FAIL_COND_V_MSG(!code_compiled, Vector<uint8_t>(), vformat("Failed to compile code to native for SPIR-V."));
 
-	return shader_container->to_bytes();
+	Vector<uint8_t> bytes = shader_container->to_bytes();
+#ifndef WEB_ENABLED
+	if (!webgpu_cache_name.is_empty() && !bytes.is_empty()) {
+		DirAccess::make_dir_recursive_absolute(ProjectSettings::get_singleton()->globalize_path("user://webgpu_shaders"));
+		Ref<FileAccess> cache_file = FileAccess::open("user://webgpu_shaders/" + webgpu_cache_name, FileAccess::WRITE);
+		if (cache_file.is_valid()) {
+			cache_file->store_buffer(bytes);
+		}
+	}
+#endif
+	return bytes;
 }
 
 RID RenderingDevice::shader_create_from_bytecode(const Vector<uint8_t> &p_shader_binary, RID p_placeholder) {
@@ -7276,18 +7440,29 @@ void RenderingDevice::_end_transfer_worker(TransferWorker *p_transfer_worker) {
 }
 
 void RenderingDevice::_submit_transfer_worker(TransferWorker *p_transfer_worker, VectorView<RDD::SemaphoreID> p_signal_semaphores) {
-	driver->command_queue_execute_and_present(transfer_queue, {}, p_transfer_worker->command_buffer, p_signal_semaphores, p_transfer_worker->command_fence, {});
+	const bool release_on_submit = driver->api_trait_get(RDD::API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT);
+	driver->command_queue_execute_and_present(transfer_queue, {}, p_transfer_worker->command_buffer, p_signal_semaphores,
+			release_on_submit ? RDD::FenceID() : p_transfer_worker->command_fence, {});
 
 	for (uint32_t i = 0; i < p_signal_semaphores.size(); i++) {
 		// Indicate the frame should wait on these semaphores before executing the main command buffer.
 		frames[frame].semaphores_to_wait_on.push_back(p_signal_semaphores[i]);
 	}
 
-	p_transfer_worker->submitted = true;
+	p_transfer_worker->submitted = !release_on_submit;
 
 	{
 		MutexLock lock(p_transfer_worker->operations_mutex);
 		p_transfer_worker->operations_submitted = p_transfer_worker->operations_counter;
+	}
+
+	if (release_on_submit) {
+		// The previous copy is already on the same queue as all later writes and draws.
+		// This releases CPU recording/staging space, not a GPU completion fence. Never
+		// reuse its offsets before submission, or later writes could replace queued data.
+		driver->command_pool_reset(p_transfer_worker->command_pool);
+		p_transfer_worker->staging_buffer_size_in_use = 0;
+		_flush_barriers_for_transfer_worker(p_transfer_worker);
 	}
 }
 
@@ -7358,12 +7533,15 @@ void RenderingDevice::_check_transfer_worker_index_array(IndexArray *p_index_arr
 
 void RenderingDevice::_submit_transfer_workers(RDD::CommandBufferID p_draw_command_buffer) {
 	MutexLock transfer_worker_lock(transfer_worker_pool_mutex);
+	const bool release_on_submit = driver->api_trait_get(RDD::API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT);
 	for (uint32_t i = 0; i < transfer_worker_pool_size; i++) {
 		TransferWorker *worker = transfer_worker_pool[i];
 		if (p_draw_command_buffer) {
 			MutexLock lock(worker->operations_mutex);
-			if (worker->operations_processed >= transfer_worker_operation_used_by_draw[worker->index]) {
-				// The operation used by the draw has already been processed, we don't need to wait on the worker.
+			const uint64_t ready_operation = release_on_submit ? worker->operations_submitted : worker->operations_processed;
+			if (ready_operation >= transfer_worker_operation_used_by_draw[worker->index]) {
+				// Queue-ordered uploads only need to be submitted before their draw; other APIs
+				// retain the original completed-operation/barrier path.
 				continue;
 			}
 		}
@@ -7393,6 +7571,15 @@ void RenderingDevice::_submit_transfer_barriers(RDD::CommandBufferID p_draw_comm
 
 void RenderingDevice::_wait_for_transfer_workers() {
 	MutexLock transfer_worker_lock(transfer_worker_pool_mutex);
+	if (driver->api_trait_get(RDD::API_TRAIT_TRANSFER_WORKER_RESOURCES_RELEASE_ON_SUBMIT)) {
+		// Explicit draining (not ordinary reuse) must still wait for real completion,
+		// including uploads submitted after the last draw fence during finalization.
+		RDD::FenceID fence = driver->fence_create();
+		driver->command_queue_execute_and_present(transfer_queue, {}, {}, {}, fence, {});
+		driver->fence_wait(fence);
+		driver->fence_free(fence);
+		return;
+	}
 	for (uint32_t i = 0; i < transfer_worker_pool_size; i++) {
 		TransferWorker *worker = transfer_worker_pool[i];
 		MutexLock lock(worker->thread_mutex);
@@ -7887,7 +8074,7 @@ void RenderingDevice::submit() {
 	ERR_FAIL_COND_MSG(local_device_processing, "device already submitted, call sync to wait until done.");
 
 	_end_frame();
-	_execute_frame(false);
+	_execute_frame(false, true);
 	local_device_processing = true;
 }
 
@@ -7897,6 +8084,7 @@ void RenderingDevice::sync() {
 	ERR_FAIL_COND_MSG(!local_device_processing, "sync can only be called after a submit");
 
 	_begin_frame(true);
+	_process_independent_buffer_readbacks(true);
 	local_device_processing = false;
 }
 
@@ -8073,6 +8261,7 @@ void RenderingDevice::_begin_frame(bool p_presented) {
 	draw_graph.begin();
 
 	// Erase pending resources.
+	_process_independent_buffer_readbacks();
 	GodotProfileZoneGrouped(_profile_zone, "_free_pending_resources");
 	_free_pending_resources(frame);
 
@@ -8182,9 +8371,10 @@ void RenderingDevice::execute_chained_cmds(bool p_present_swap_chain, RenderingD
 	}
 
 	frames[frame].semaphores_to_wait_on.clear();
+	_start_independent_buffer_readbacks();
 }
 
-void RenderingDevice::_execute_frame(bool p_present) {
+void RenderingDevice::_execute_frame(bool p_present, bool p_require_fence) {
 	// Check whether this frame should present the swap chains and in which queue.
 	const bool frame_can_present = p_present && !frames[frame].swap_chains_to_present.is_empty();
 	const bool separate_present_queue = main_queue != present_queue;
@@ -8196,10 +8386,15 @@ void RenderingDevice::_execute_frame(bool p_present) {
 			: RDD::SemaphoreID(nullptr);
 	const bool present_swap_chain = frame_can_present && !separate_present_queue;
 
-	execute_chained_cmds(present_swap_chain, frames[frame].fence, semaphore);
+	// WebGPU owns submitted objects and queues host uploads in submission order. Its CPU
+	// command/frame bookkeeping can be reused without turning each frame into a GPU round trip.
+	// Explicit sync and the legacy texture-download path still use a real completion fence.
+	const bool require_fence = p_require_fence || !driver->api_trait_get(RDD::API_TRAIT_FRAME_RESOURCES_RELEASE_ON_SUBMIT) ||
+			!frames[frame].download_buffer_get_data_requests.is_empty() || !frames[frame].download_texture_get_data_requests.is_empty();
+	execute_chained_cmds(present_swap_chain, require_fence ? frames[frame].fence : RDD::FenceID(), semaphore);
 	// Indicate the fence has been signaled so the next time the frame's contents need to be
 	// used, the CPU needs to wait on the work to be completed.
-	frames[frame].fence_signaled = true;
+	frames[frame].fence_signaled = require_fence;
 
 	if (frame_can_present) {
 		if (separate_present_queue) {
@@ -8308,13 +8503,14 @@ void RenderingDevice::_stall_for_previous_frames() {
 void RenderingDevice::_flush_and_stall_for_all_frames(bool p_begin_frame) {
 	_stall_for_previous_frames();
 	_end_frame();
-	_execute_frame(false);
+	_execute_frame(false, true);
 
 	if (p_begin_frame) {
 		_begin_frame();
 	} else {
 		_stall_for_frame(frame);
 	}
+	_process_independent_buffer_readbacks(true);
 }
 
 Error RenderingDevice::initialize(RenderingContextDriver *p_context, DisplayServerEnums::WindowID p_main_window) {
@@ -10063,7 +10259,23 @@ RID RenderingDevice::_shader_create_from_spirv(const Ref<RDShaderSPIRV> &p_spirv
 		}
 		stage_data.push_back(sd);
 	}
-	return shader_create_from_spirv(stage_data);
+	RID shader = shader_create_from_spirv(stage_data);
+#ifdef WEBGPU_ENABLED
+	if (shader.is_valid() && get_device_capabilities().device_family == RenderingDeviceDriver::DEVICE_WEBGPU && WebGPUCompilationTrace::enabled()) {
+		String label = p_shader_name;
+		if (label.is_empty()) {
+			for (int i = 0; i < ScriptServer::get_language_count(); i++) {
+				const Vector<ScriptLanguage::StackInfo> stack = ScriptServer::get_language(i)->debug_get_current_stack_info();
+				if (!stack.is_empty()) {
+					label = stack[0].file + ":" + itos(stack[0].line) + " (" + stack[0].func + ")";
+					break;
+				}
+			}
+		}
+		set_resource_name(shader, label);
+	}
+#endif
+	return shader;
 }
 
 RID RenderingDevice::_uniform_set_create(const TypedArray<RDUniform> &p_uniforms, RID p_shader, uint32_t p_shader_set) {
